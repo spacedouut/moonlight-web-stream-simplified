@@ -1,5 +1,5 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     num::ParseIntError,
     str::FromStr,
 };
@@ -159,6 +159,21 @@ pub struct WebServerConfig {
     pub certificate: Option<ConfigSsl>,
     #[serde(default)]
     pub url_path_prefix: String,
+    #[serde(default)]
+    pub web_transport: Option<WebTransportConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebTransportConfig {
+    /// UDP bind address for the QUIC endpoint
+    #[serde(default = "default_web_transport_bind_address")]
+    pub bind_address: SocketAddr,
+    /// URL the browser connects to.
+    #[serde(default)]
+    pub public_url: Option<String>,
+    /// Advertise the leaf certificate hash to browsers.
+    #[serde(default)]
+    pub advertise_certificate_hash: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,12 +188,17 @@ impl Default for WebServerConfig {
             bind_address: default_bind_address(),
             certificate: None,
             url_path_prefix: "".to_string(),
+            web_transport: None,
         }
     }
 }
 
 fn default_bind_address() -> SocketAddr {
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 8080))
+}
+
+fn default_web_transport_bind_address() -> SocketAddr {
+    SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 4433, 0, 0))
 }
 // -- Moonlight
 

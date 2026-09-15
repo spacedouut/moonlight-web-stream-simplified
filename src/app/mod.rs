@@ -49,6 +49,8 @@ pub enum AppError {
     WebRtcClientCodecNotSupported,
     #[error("the stream was already closed")]
     StreamClosed,
+    #[error("web transport is disabled")]
+    WebTransportDisabled,
     #[error("the host doesn't support the given config: {0}")]
     StreamConfig(#[from] StreamConfigError),
     #[error("failed to parse the given sdp: {0}")]
@@ -78,6 +80,7 @@ impl ResponseError for AppError {
             Self::HostNotPaired => HttpResponse::Forbidden().finish(),
             Self::HostPaired => HttpResponse::NotModified().body("host already paired"),
             Self::StreamClosed => HttpResponse::NotFound().body("stream not found"),
+            Self::WebTransportDisabled => HttpResponse::NotFound().finish(),
             Self::WebRtcClientCodecNotSupported => HttpResponse::BadRequest().finish(),
             Self::WebRTCParse(_) => HttpResponse::BadRequest().finish(),
             _ => HttpResponse::InternalServerError().finish(),

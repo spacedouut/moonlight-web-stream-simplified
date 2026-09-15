@@ -96,6 +96,7 @@ export const en = {
         dataTransport: "Data Transport",
         auto: "Auto",
         webSocket: "Web Socket",
+        webTransport: "WebTransport (experimental)",
         enterFullscreenOnStreamStart: "Enter Fullscreen On First Stream Interaction",
         toggleFullscreenWithKeybind: "Toggle Fullscreen and Mouse Lock with Ctrl + Shift + I",
         style: "Style",
