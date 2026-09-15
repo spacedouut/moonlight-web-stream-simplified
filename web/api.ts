@@ -1,4 +1,4 @@
-import { App, DeleteHostQuery, DetailedHost, GetAppImageQuery, GetAppsQuery, GetAppsResponse, GetHostQuery, GetHostResponse, GetHostsResponse, PostCancelRequest, PostCancelResponse, PostPairRequest, PostPairResponse1, PostPairResponse2, PostWakeUpRequest, PostHostRequest, PostHostResponse, UndetailedHost, PatchHostRequest, } from "./api_bindings"
+import { App, DeleteHostQuery, DetailedHost, GetAppImageQuery, GetAppsQuery, GetAppsResponse, GetHostQuery, GetHostResponse, GetHostsResponse, PostCancelRequest, PostCancelResponse, PostPairRequest, PostPairResponse1, PostPairResponse2, PostWakeUpRequest, PostHostRequest, PostHostResponse, UndetailedHost, PatchHostRequest, WebTransportConfigResponse, } from "./api_bindings"
 import { buildUrl } from "./config_"
 import { WebRtcLinkHeader_Tags, webrtcLinkHeaderParse } from "./uniffi/moonlight_common_bindings"
 
@@ -288,6 +288,11 @@ export async function apiWebRTCConfiguration(api: Api): Promise<WebRTCConfigurat
     return {
         iceServers
     }
+}
+
+export async function apiWebTransportConfig(api: Api): Promise<WebTransportConfigResponse> {
+    const response = await fetchApi(api, "/host/stream/web_transport", GET)
+    return response as WebTransportConfigResponse
 }
 
 export type WebRTCAnswer = {

@@ -260,6 +260,26 @@ There are a few important things to be aware of when using WebSockets for stream
     ```
   - The decoder will be detected and used automatically.
 
+### WebTransport (experimental)
+
+WebTransport streams over HTTP/3 and QUIC. Configure it under `web_server.web_transport`:
+
+```json
+{
+    "web_server": {
+        "web_transport": {
+            "bind_address": "0.0.0.0:4433",
+            "public_url": "https://example.com:4433",
+            "advertise_certificate_hash": false
+        }
+    }
+}
+```
+
+TLS is required, and the configured UDP port must be open to clients. `public_url` is optional;
+without it, the browser derives the URL from the current host and configured UDP port.
+`advertise_certificate_hash` is intended only for short-lived ECDSA certificates.
+
 ## Config
 The config file is under `server/config.json` relative to the executable.
 Here are the most important settings for configuring Moonlight Web.

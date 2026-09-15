@@ -42,7 +42,7 @@ export type Settings = {
 }
 
 export type StreamCodec = "h264" | "auto" | "h265" | "av1"
-export type TransportType = "auto" | "webrtc" | "websocket"
+export type TransportType = "auto" | "webrtc" | "websocket" | "webtransport"
 
 import DEFAULT_SETTINGS from "../default_settings"
 
@@ -466,6 +466,9 @@ export class StreamSettingsComponent implements Component {
             { value: "webrtc", name: "WebRTC" },
             { value: "websocket", name: i.webSocket },
         )
+        if ("WebTransport" in globalThis) {
+            allowedDataTransport.push({ value: "webtransport", name: i.webTransport })
+        }
 
         this.language = new SelectComponent("language", getLanguageOptions(), {
             displayName: i.language,
