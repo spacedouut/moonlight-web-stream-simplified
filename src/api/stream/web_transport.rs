@@ -1,10 +1,11 @@
 //! Experimental WebTransport transport.
 //!
-//! The message stream uses length-prefixed UTF-8 JSON frames containing the
-//! existing WebSocket messages. Media and control packets use the existing
-//! WebSocket binary layout: video and control packets are unidirectional
-//! streams, audio packets are datagrams when they fit, and client control
-//! packets may arrive as datagrams or unidirectional streams.
+//! The message stream uses `u32` big-endian length-prefixed frames with a
+//! one-byte kind: `0` contains UTF-8 JSON and `1` contains the existing
+//! WebSocket binary layout. Control packets use kind-1 frames for reliable
+//! ordered delivery.
+//! Video packets use unidirectional streams, while audio packets use
+//! datagrams when they fit and unidirectional streams otherwise.
 
 use std::time::Duration;
 
@@ -25,7 +26,6 @@ use moonlight_common::stream::{
     tokio::MoonlightStreamEvent,
 };
 use rustls::{ServerConfig, pki_types::pem::PemObject};
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::{
     select,
@@ -49,6 +49,7 @@ use crate::{
 
 enum Outgoing {
     Message(String),
+    Binary(Bytes),
     Uni(Bytes),
     Datagram(Bytes),
 }
@@ -57,11 +58,6 @@ enum Incoming {
     Message(WebSocketServerboundMessage),
     Binary(Bytes),
     Closed,
-}
-
-#[derive(Serialize)]
-struct CertificateHashResponse {
-    certificate_hash: Option<String>,
 }
 
 #[get("/host/stream/web_transport")]
@@ -82,9 +78,7 @@ pub async fn web_transport_config(
             .web_server
             .certificate
             .as_ref()
-            .and_then(|certificate| {
-                CertificateHashResponse::from_pem(&certificate.certificate_pem).certificate_hash
-            })
+            .and_then(|certificate| certificate_hash_from_pem(&certificate.certificate_pem))
     } else {
         None
     };
@@ -95,22 +89,31 @@ pub async fn web_transport_config(
     }))
 }
 
-impl CertificateHashResponse {
-    fn from_pem(path: &str) -> Self {
-        let Ok(mut certs) = rustls::pki_types::CertificateDer::pem_file_iter(path) else {
-            return Self {
-                certificate_hash: None,
-            };
-        };
-        let Some(Ok(cert)) = certs.next() else {
-            return Self {
-                certificate_hash: None,
-            };
-        };
-        Self {
-            certificate_hash: Some(hex::encode(Sha256::digest(cert.as_ref()))),
-        }
+fn certificate_hash_from_pem(path: &str) -> Option<String> {
+    let mut certs = rustls::pki_types::CertificateDer::pem_file_iter(path).ok()?;
+    let cert = certs.next()?.ok()?;
+    Some(hex::encode(Sha256::digest(cert.as_ref())))
+}
+
+const MAX_FRAME: usize = 1 << 20;
+
+async fn read_frame(stream: &mut wtransport::RecvStream) -> Result<Option<Vec<u8>>, AppError> {
+    let mut header = [0; 4];
+    stream
+        .read_exact(&mut header)
+        .await
+        .map_err(|_| AppError::StreamClosed)?;
+    let len = u32::from_be_bytes(header) as usize;
+    if len > MAX_FRAME {
+        warn!(length = len, "web transport frame exceeds maximum size");
+        return Err(AppError::StreamClosed);
     }
+    let mut body = vec![0; len];
+    stream
+        .read_exact(&mut body)
+        .await
+        .map_err(|_| AppError::StreamClosed)?;
+    Ok(Some(body))
 }
 
 pub fn spawn_web_transport_server(
@@ -160,34 +163,6 @@ pub fn spawn_web_transport_server(
     Ok(())
 }
 
-async fn read_frame(stream: &mut wtransport::RecvStream) -> Result<Option<Vec<u8>>, AppError> {
-    let mut header = [0; 4];
-    stream
-        .read_exact(&mut header)
-        .await
-        .map_err(|_| AppError::StreamClosed)?;
-    let len = u32::from_be_bytes(header) as usize;
-    let mut body = vec![0; len];
-    stream
-        .read_exact(&mut body)
-        .await
-        .map_err(|_| AppError::StreamClosed)?;
-    Ok(Some(body))
-}
-
-async fn read_all(mut stream: wtransport::RecvStream) -> Result<Bytes, AppError> {
-    let mut bytes = Vec::new();
-    let mut buffer = [0; 16 * 1024];
-    while let Some(len) = stream
-        .read(&mut buffer)
-        .await
-        .map_err(|_| AppError::StreamClosed)?
-    {
-        bytes.extend_from_slice(&buffer[..len]);
-    }
-    Ok(bytes.into())
-}
-
 async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), AppError> {
     let (mut message_send, mut message_recv) =
         timeout(Duration::from_secs(10), connection.accept_bi())
@@ -197,8 +172,12 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
     let request = read_frame(&mut message_recv)
         .await?
         .ok_or(AppError::StreamClosed)?;
+    if request.first() != Some(&0) {
+        warn!("web transport stream request was not a JSON frame");
+        return Err(AppError::StreamClosed);
+    }
     let request: WebSocketServerboundMessage =
-        serde_json::from_slice(&request).map_err(|_| AppError::StreamClosed)?;
+        serde_json::from_slice(&request[1..]).map_err(|_| AppError::StreamClosed)?;
     let WebSocketServerboundMessage::Request(request) = request else {
         return Err(AppError::StreamClosed);
     };
@@ -212,9 +191,19 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
                 match outgoing {
                     Outgoing::Message(message) => {
                         let bytes = message.as_bytes();
-                        let mut frame = Vec::with_capacity(4 + bytes.len());
-                        frame.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+                        let mut frame = Vec::with_capacity(5 + bytes.len());
+                        frame.extend_from_slice(&((bytes.len() + 1) as u32).to_be_bytes());
+                        frame.push(0);
                         frame.extend_from_slice(bytes);
+                        if message_send.write_all(&frame).await.is_err() {
+                            break;
+                        }
+                    }
+                    Outgoing::Binary(bytes) => {
+                        let mut frame = Vec::with_capacity(5 + bytes.len());
+                        frame.extend_from_slice(&((bytes.len() + 1) as u32).to_be_bytes());
+                        frame.push(1);
+                        frame.extend_from_slice(&bytes);
                         if message_send.write_all(&frame).await.is_err() {
                             break;
                         }
@@ -248,14 +237,33 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
     tokio::spawn(async move {
         loop {
             match read_frame(&mut message_recv).await {
-                Ok(Some(frame)) => match serde_json::from_slice(&frame) {
-                    Ok(message) => {
-                        if reader_tx.send(Incoming::Message(message)).is_err() {
-                            break;
+                Ok(Some(frame)) => {
+                    let Some((kind, payload)) = frame.split_first() else {
+                        warn!("received empty web transport frame");
+                        continue;
+                    };
+                    match *kind {
+                        0 => match serde_json::from_slice(payload) {
+                            Ok(message) => {
+                                if reader_tx.send(Incoming::Message(message)).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(err) => {
+                                warn!(error = %err, "failed to deserialize web transport message")
+                            }
+                        },
+                        1 => {
+                            if reader_tx
+                                .send(Incoming::Binary(Bytes::copy_from_slice(payload)))
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
+                        kind => warn!(kind, "received unknown web transport frame kind"),
                     }
-                    Err(err) => warn!(error = %err, "failed to deserialize web transport message"),
-                },
+                }
                 _ => {
                     let _ = reader_tx.send(Incoming::Closed);
                     break;
@@ -302,7 +310,7 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
                         #[allow(clippy::unwrap_used)]
                         let len = packet.serialize(&control_config, buffer[1..].as_mut_array().unwrap()).unwrap();
                         buffer.truncate(1 + len);
-                        Outgoing::Uni(buffer.into())
+                        Outgoing::Binary(buffer.into())
                     }
                     _ => continue,
                 };
@@ -314,17 +322,6 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
                         rtt_ms: rtt.rtt.as_millis() as u32,
                         rtt_variance_ms: rtt.rtt_variance.as_millis() as u32,
                     }));
-                }
-            }
-            result = connection.receive_datagram() => {
-                if let Ok(datagram) = result { let _ = incoming_tx.send(Incoming::Binary(datagram.payload())); }
-            }
-            result = connection.accept_uni() => {
-                if let Ok(uni) = result {
-                    let tx = incoming_tx.clone();
-                    tokio::spawn(async move {
-                        if let Ok(bytes) = read_all(uni).await { let _ = tx.send(Incoming::Binary(bytes)); }
-                    });
                 }
             }
             incoming = incoming_rx.recv() => {

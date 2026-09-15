@@ -280,6 +280,12 @@ TLS is required, and the configured UDP port must be open to clients. `public_ur
 without it, the browser derives the URL from the current host and configured UDP port.
 `advertise_certificate_hash` is intended only for short-lived ECDSA certificates.
 
+WebTransport messages use `u32` big-endian length-prefixed frames with a one-byte kind:
+kind `0` contains the existing JSON messages, and kind `1` contains the existing
+WebSocket channel-byte binary layout. Control packets use reliable, ordered kind-1
+frames on the bidirectional message stream. Video frames use unidirectional streams,
+while audio uses datagrams when they fit and unidirectional streams otherwise.
+
 ## Config
 The config file is under `server/config.json` relative to the executable.
 Here are the most important settings for configuring Moonlight Web.
