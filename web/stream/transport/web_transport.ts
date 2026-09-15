@@ -2,7 +2,7 @@ import { Api, apiWebTransportConfig } from "../../api"
 import { WebSocketChannel, WebSocketClientboundMessage, WebSocketServerboundMessage, WebTransportConfigResponse } from "../../api_bindings"
 import { ClientInputEvent, ControlPacket, ControlPacketConfig, controlPacketDeserialize, controlPacketSerialize, InputBatcher, PacketDirection } from "../../uniffi/moonlight_common_bindings"
 import { globalObject } from "../../util"
-import { AudioPlayer } from "../audio/index"
+import { AudioPlayer, TrackAudioPlayer } from "../audio/index"
 import { Logger } from "../log"
 import { DataPipe } from "../pipeline/pipes"
 import { StatValue } from "../stats"
@@ -20,6 +20,7 @@ export class WebTransportTransport implements Transport {
     private wasConnected = false
     private closedDispatched = false
     private onOpen: Promise<void>
+    private writeChain: Promise<void> = Promise.resolve()
     private internalOnConnect: () => void = () => { }
     private onConnected = new Promise<void>(resolve => this.internalOnConnect = resolve)
     private connectData: TransportConnectData | null = null
@@ -43,44 +44,66 @@ export class WebTransportTransport implements Transport {
         this.transport = new WebTransport(url, options)
         this.controlStream = new WebTransportControlStream(this, generateControlPacketConfig())
         this.onOpen = this.initialize()
-        this.transport.closed.then(() => this.close())
+        this.transport.closed.then(() => this.close(), () => this.close())
     }
 
     private async initialize(): Promise<void> {
-        await this.transport.ready
-        this.messageStream = await this.transport.createBidirectionalStream()
-        this.messageWriter = this.messageStream.writable.getWriter()
-        void this.readMessages(this.messageStream.readable)
-        void this.readUnidirectionalStreams()
-        void this.readDatagrams()
+        try {
+            await this.transport.ready
+            this.messageStream = await this.transport.createBidirectionalStream()
+            this.messageWriter = this.messageStream.writable.getWriter()
+            void this.readMessages(this.messageStream.readable)
+            void this.readUnidirectionalStreams()
+            void this.readDatagrams()
+        } catch {
+            await this.close()
+        }
     }
 
-    private async writeMessage(message: WebSocketServerboundMessage | WebSocketClientboundMessage): Promise<void> {
-        await this.onOpen
-        const bytes = new TextEncoder().encode(JSON.stringify(message))
-        const frame = new Uint8Array(4 + bytes.length)
-        new DataView(frame.buffer).setUint32(0, bytes.length)
-        frame.set(bytes, 4)
-        await this.messageWriter?.write(frame)
+    private enqueueFrame(kind: number, bytes: Uint8Array): void {
+        const frame = new Uint8Array(5 + bytes.length)
+        new DataView(frame.buffer).setUint32(0, bytes.length + 1)
+        frame[4] = kind
+        frame.set(bytes, 5)
+        this.writeChain = this.writeChain
+            .then(() => this.onOpen)
+            .then(() => this.messageWriter?.write(frame))
+            .catch(() => { })
+    }
+
+    private writeMessage(message: WebSocketServerboundMessage | WebSocketClientboundMessage): void {
+        this.enqueueFrame(0, new TextEncoder().encode(JSON.stringify(message)))
     }
 
     private async readMessages(readable: ReadableStream<Uint8Array>): Promise<void> {
-        const reader = readable.getReader()
-        let buffered = new Uint8Array()
-        while (true) {
-            const result = await reader.read()
-            if (result.done) return
-            const merged = new Uint8Array(buffered.length + result.value.length)
-            merged.set(buffered)
-            merged.set(result.value, buffered.length)
-            buffered = merged
-            while (buffered.length >= 4) {
-                const length = new DataView(buffered.buffer, buffered.byteOffset).getUint32(0)
-                if (buffered.length < length + 4) break
-                const json = new TextDecoder().decode(buffered.subarray(4, length + 4))
-                buffered = buffered.slice(length + 4)
-                this.onMessage(JSON.parse(json) as WebSocketClientboundMessage)
+        try {
+            const reader = readable.getReader()
+            let buffered = new Uint8Array()
+            while (true) {
+                const result = await reader.read()
+                if (result.done) return
+                const merged = new Uint8Array(buffered.length + result.value.length)
+                merged.set(buffered)
+                merged.set(result.value, buffered.length)
+                buffered = merged
+                while (buffered.length >= 4) {
+                    const length = new DataView(buffered.buffer, buffered.byteOffset).getUint32(0)
+                    if (buffered.length < length + 4) break
+                    if (length < 1) throw new Error("empty WebTransport frame")
+                    const kind = buffered[4]
+                    const payload = buffered.subarray(5, length + 4)
+                    buffered = buffered.slice(length + 4)
+                    if (kind == 0) {
+                        this.onMessage(JSON.parse(new TextDecoder().decode(payload)) as WebSocketClientboundMessage)
+                    } else if (kind == 1) {
+                        this.onBinary(copyBytes(payload))
+                    } else {
+                        this.logger?.debug(`received unknown WebTransport frame kind ${kind}`)
+                    }
+                }
             }
+        } catch {
+            await this.close()
         }
     }
 
@@ -158,9 +181,13 @@ export class WebTransportTransport implements Transport {
     }
 
     async startStream(options: TransportOptions): Promise<void> {
-        await this.onOpen
+        try {
+            await this.onOpen
+        } catch {
+            return
+        }
         this.options = options
-        await this.writeMessage({
+        this.writeMessage({
             Request: {
                 host_id: options.hostId, app_id: options.appId, width: options.width, height: options.height, fps: options.fps, bitrate: options.bitrate,
                 hdr: options.hdr, local_audio_play_mode: options.localAudioPlayMode, supported_codecs: createSupportedVideoFormatsBits(options.supportedCodecs),
@@ -176,7 +203,7 @@ export class WebTransportTransport implements Transport {
         this.videoPipeline = pipeline as DataPipe
     }
 
-    setAudioPipeline(type: "audiotrack", pipeline: unknown): Promise<void>
+    setAudioPipeline(type: "audiotrack", pipeline: (TrackAudioPlayer & AudioPlayer)): Promise<void>
     setAudioPipeline(type: "data", pipeline: (DataPipe & AudioPlayer)): Promise<void>
     async setAudioPipeline(type: TransportAudioType, pipeline: unknown): Promise<void> {
         if (type != "data") throw `invalid web transport audio pipeline type ${type}`
@@ -212,30 +239,18 @@ export class WebTransportTransport implements Transport {
                 resolve(performance.now() - start)
             }
         })
-        await this.writeMessage({ Stats: { Ping: Math.floor(Math.random() * 1000) } })
+        this.writeMessage({ Stats: { Ping: Math.floor(Math.random() * 1000) } })
         return await this.onPongPromise
     }
 
-    async sendControl(packet: ControlPacket, config: ControlPacketConfig): Promise<void> {
-        await this.onOpen
+    sendControl(packet: ControlPacket, config: ControlPacketConfig): void {
         const raw = controlPacketSerialize(config, packet)
         if (!raw) return
         const packetView = new Uint8Array(raw)
         const message = new Uint8Array(1 + packetView.length)
         message[0] = WebSocketChannel.CONTROL
         message.set(packetView, 1)
-        const writer = this.transport.datagrams.writable.getWriter()
-        if (message.length <= this.transport.datagrams.maxDatagramSize) {
-            await writer.write(message)
-            writer.releaseLock()
-        } else {
-            writer.releaseLock()
-            const stream = await this.transport.createUnidirectionalStream()
-            const streamWriter = stream.getWriter()
-            await streamWriter.write(message)
-            await streamWriter.close()
-            streamWriter.releaseLock()
-        }
+        this.enqueueFrame(1, message)
     }
 
     async close(): Promise<void> {
@@ -251,19 +266,13 @@ class WebTransportControlStream implements IControlStream {
     onreceive: ((packet: ControlPacket) => void) | null = null
     private batcher = new InputBatcher()
     private batchSendTimeout: number | null = null
-    private packetBuffer: ControlPacket[] = []
     constructor(private transport: WebTransportTransport, private config: ControlPacketConfig) { }
     send(input: ClientInputEvent): void {
         for (const packet of this.batcher.batchInput(input)) this.sendRaw(packet)
         if (this.batchSendTimeout == null) this.batchSendTimeout = globalObject().setTimeout(this.boundSendBatchedInputs, 1)
     }
     sendRaw(packet: ControlPacket): void {
-        this.packetBuffer.push(packet)
-        void this.flush()
-    }
-    private async flush(): Promise<void> {
-        const packets = this.packetBuffer.splice(0)
-        for (const packet of packets) await this.transport.sendControl(packet, this.config)
+        this.transport.sendControl(packet, this.config)
     }
     onRawPacket(packetBuffer: Uint8Array): void {
         const packet = controlPacketDeserialize(this.config, PacketDirection.ClientBound, packetBuffer.slice().buffer)
