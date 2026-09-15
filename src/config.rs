@@ -1,5 +1,5 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     num::ParseIntError,
     str::FromStr,
 };
@@ -198,7 +198,7 @@ fn default_bind_address() -> SocketAddr {
 }
 
 fn default_web_transport_bind_address() -> SocketAddr {
-    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 4433))
+    SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 4433, 0, 0))
 }
 // -- Moonlight
 

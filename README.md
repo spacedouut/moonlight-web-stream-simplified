@@ -268,7 +268,7 @@ WebTransport streams over HTTP/3 and QUIC. Configure it under `web_server.web_tr
 {
     "web_server": {
         "web_transport": {
-            "bind_address": "0.0.0.0:4433",
+            "bind_address": "[::]:4433",
             "public_url": "https://example.com:4433",
             "advertise_certificate_hash": false
         }
