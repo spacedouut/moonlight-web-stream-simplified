@@ -123,11 +123,15 @@ export class StreamStats {
             return
         }
 
-        const stats = await this.transport?.getStats()
-        for (const key in stats) {
-            const value = stats[key]
+        try {
+            const stats = await this.transport.getStats()
+            for (const key in stats) {
+                const value = stats[key]
 
-            this.statsData.transport[key] = value
+                this.statsData.transport[key] = value
+            }
+        } catch (error) {
+            console.debug(`Failed to query transport stats: ${error}`)
         }
     }
     private async updateVideoStats() {

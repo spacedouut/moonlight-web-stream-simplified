@@ -108,29 +108,79 @@ export class WebTransportTransport implements Transport {
     }
 
     private async readUnidirectionalStreams(): Promise<void> {
+        let stopDispatcher: (() => void) | null = null
         try {
             const streams = this.transport.incomingUnidirectionalStreams.getReader()
+            const pending: Promise<Uint8Array<ArrayBuffer> | null>[] = []
+            let accepting = true
+            let wakeDispatcher: (() => void) | null = null
+            const notifyDispatcher = () => {
+                const wake = wakeDispatcher
+                wakeDispatcher = null
+                wake?.()
+            }
+            stopDispatcher = () => {
+                accepting = false
+                notifyDispatcher()
+            }
+            const dispatch = async() => {
+                while (accepting || pending.length > 0) {
+                    if (pending.length == 0) {
+                        await new Promise<void>(resolve => wakeDispatcher = resolve)
+                        continue
+                    }
+                    const bytes = await pending.shift()!
+                    if (bytes) this.onBinary(bytes)
+                }
+            }
+            const dispatchPromise = dispatch()
             while (true) {
                 const streamResult = await streams.read()
-                if (streamResult.done) return
-                const readable = streamResult.value
-                const reader = readable.getReader()
-                const chunks: Uint8Array[] = []
-                while (true) {
-                    const result = await reader.read()
-                    if (result.done) break
-                    chunks.push(result.value)
+                if (streamResult.done) {
+                    accepting = false
+                    notifyDispatcher()
+                    await dispatchPromise
+                    return
                 }
-                const total = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.length, 0))
-                let offset = 0
-                for (const chunk of chunks) {
-                    total.set(chunk, offset)
-                    offset += chunk.length
-                }
-                this.onBinary(copyBytes(total))
+                while (pending.length >= 64) await pending[0]
+                pending.push(this.readAll(streamResult.value))
+                notifyDispatcher()
             }
         } catch {
-            this.close()
+            stopDispatcher?.()
+            await this.close()
+        }
+    }
+
+    private async readAll(readable: ReadableStream<Uint8Array>): Promise<Uint8Array<ArrayBuffer> | null> {
+        const reader = readable.getReader()
+        let timeoutId: number | null = null
+        const read = async(): Promise<Uint8Array<ArrayBuffer>> => {
+            const chunks: Uint8Array[] = []
+            while (true) {
+                const result = await reader.read()
+                if (result.done) break
+                chunks.push(result.value)
+            }
+            const total = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.length, 0))
+            let offset = 0
+            for (const chunk of chunks) {
+                total.set(chunk, offset)
+                offset += chunk.length
+            }
+            return total
+        }
+        const timedOut = new Promise<null>(resolve => {
+            timeoutId = globalObject().setTimeout(() => {
+                void reader.cancel().then(() => resolve(null), () => resolve(null))
+            }, 2000)
+        })
+        try {
+            return await Promise.race([read(), timedOut])
+        } catch {
+            return null
+        } finally {
+            if (timeoutId != null) globalObject().clearTimeout(timeoutId)
         }
     }
 
@@ -231,9 +281,15 @@ export class WebTransportTransport implements Transport {
     private async doPing(): Promise<number> {
         await this.onConnected
         if (this.onPongPromise) return await this.onPongPromise
-        this.onPongPromise = new Promise(resolve => {
+        this.onPongPromise = new Promise((resolve, reject) => {
             const start = performance.now()
+            const timeoutId = globalObject().setTimeout(() => {
+                this.pongReceiveResolve = null
+                this.onPongPromise = null
+                reject(new Error("pong timeout"))
+            }, 5000)
             this.pongReceiveResolve = () => {
+                globalObject().clearTimeout(timeoutId)
                 this.pongReceiveResolve = null
                 this.onPongPromise = null
                 resolve(performance.now() - start)

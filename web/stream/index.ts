@@ -378,10 +378,18 @@ export class Stream implements Component {
         const options = await this.createTransportOptions()
         if (!options) return "failednoconnect" as const
 
-        const transport = new WebTransportTransport(this.api, config, this.logger)
-        transport.controlStream.onreceive = this.boundReceivePacket
-        const onConnect = new Promise<TransportConnectData>(resolve => transport.onconnect = resolve)
-        const onClose = new Promise<TransportShutdown>(resolve => transport.onclose = resolve)
+        let transport: WebTransportTransport
+        let onConnect: Promise<TransportConnectData>
+        let onClose: Promise<TransportShutdown>
+        try {
+            transport = new WebTransportTransport(this.api, config, this.logger)
+            transport.controlStream.onreceive = this.boundReceivePacket
+            onConnect = new Promise<TransportConnectData>(resolve => transport.onconnect = resolve)
+            onClose = new Promise<TransportShutdown>(resolve => transport.onclose = resolve)
+        } catch (error) {
+            this.debugLog(`failed to create WebTransport transport because ${error}`)
+            return "failednoconnect" as const
+        }
 
         try {
             await transport.startStream(options)
