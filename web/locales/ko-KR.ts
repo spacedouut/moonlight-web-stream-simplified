@@ -99,6 +99,7 @@ export const koKR: Translations = {
         webrtcDisconnectTimeout: "WebRTC 연결 끊김 시간 초과 (초)",
         auto: "자동",
         webSocket: "웹 소켓 (Web Socket)",
+        webTransport: "WebTransport (실험적)",
         enterFullscreenOnStreamStart: "스트림 첫 상호작용 시 전체 화면으로 전환",
         toggleFullscreenWithKeybind: "Ctrl + Shift + I로 전체 화면 및 마우스 가두기 전환",
         style: "스타일",

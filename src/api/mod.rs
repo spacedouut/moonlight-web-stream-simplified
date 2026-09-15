@@ -7,6 +7,7 @@ use crate::api::{
     },
     stream::{
         web_socket::web_socket_stream,
+        web_transport::web_transport_config,
         webrtc::{webrtc_delete, webrtc_get, webrtc_options, webrtc_patch, webrtc_post},
     },
 };
@@ -32,6 +33,7 @@ pub fn api_service() -> impl HttpServiceFactory {
             get_apps,
             get_app_image,
             web_socket_stream,
+            web_transport_config,
         ])
         .service(web::scope("/host/stream/webrtc").service(services![
             webrtc_options,

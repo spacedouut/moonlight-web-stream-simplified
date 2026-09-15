@@ -1,0 +1,289 @@
+import { Api, apiWebTransportConfig } from "../../api"
+import { WebSocketChannel, WebSocketClientboundMessage, WebSocketServerboundMessage, WebTransportConfigResponse } from "../../api_bindings"
+import { ClientInputEvent, ControlPacket, ControlPacketConfig, controlPacketDeserialize, controlPacketSerialize, InputBatcher, PacketDirection } from "../../uniffi/moonlight_common_bindings"
+import { globalObject } from "../../util"
+import { AudioPlayer } from "../audio/index"
+import { Logger } from "../log"
+import { DataPipe } from "../pipeline/pipes"
+import { StatValue } from "../stats"
+import { createSupportedVideoFormatsBits, getSelectedVideoCodec } from "../video"
+import { VideoRenderer, TrackVideoRenderer } from "../video/index"
+import { generateControlPacketConfig, IControlStream, Transport, TransportAudioType, TransportConnectData, TransportOptions, TransportShutdown, TransportVideoType } from "./index"
+
+export class WebTransportTransport implements Transport {
+    readonly implementationName = "web_transport"
+    private transport: WebTransport
+    private messageStream: WebTransportBidirectionalStream | null = null
+    private messageWriter: WritableStreamDefaultWriter<Uint8Array> | null = null
+    private logger?: Logger
+    private options: TransportOptions | null = null
+    private wasConnected = false
+    private closedDispatched = false
+    private onOpen: Promise<void>
+    private internalOnConnect: () => void = () => { }
+    private onConnected = new Promise<void>(resolve => this.internalOnConnect = resolve)
+    private connectData: TransportConnectData | null = null
+    private videoPipeline: DataPipe | null = null
+    private audioPipeline: DataPipe | null = null
+    private relayStats: { rttMs: number, rttVarianceMs: number } | null = null
+    private pongReceiveResolve: (() => void) | null = null
+    private onPongPromise: Promise<number> | null = null
+
+    controlStream: WebTransportControlStream
+    onconnect: ((connectData: TransportConnectData) => void) | null = null
+    onclose: ((shutdown: TransportShutdown) => void) | null = null
+
+    constructor(api: Api, config: WebTransportConfigResponse, logger?: Logger) {
+        this.logger = logger
+        const apiPath = new URL(api.host_url).pathname
+        const url = config.url ?? `https://${location.hostname}:${config.port}${apiPath}/host/stream/web_transport`
+        const options = config.certificate_hash ? {
+            serverCertificateHashes: [{ algorithm: "sha-256" as const, value: hexToArrayBuffer(config.certificate_hash) }]
+        } : undefined
+        this.transport = new WebTransport(url, options)
+        this.controlStream = new WebTransportControlStream(this, generateControlPacketConfig())
+        this.onOpen = this.initialize()
+        this.transport.closed.then(() => this.close())
+    }
+
+    private async initialize(): Promise<void> {
+        await this.transport.ready
+        this.messageStream = await this.transport.createBidirectionalStream()
+        this.messageWriter = this.messageStream.writable.getWriter()
+        void this.readMessages(this.messageStream.readable)
+        void this.readUnidirectionalStreams()
+        void this.readDatagrams()
+    }
+
+    private async writeMessage(message: WebSocketServerboundMessage | WebSocketClientboundMessage): Promise<void> {
+        await this.onOpen
+        const bytes = new TextEncoder().encode(JSON.stringify(message))
+        const frame = new Uint8Array(4 + bytes.length)
+        new DataView(frame.buffer).setUint32(0, bytes.length)
+        frame.set(bytes, 4)
+        await this.messageWriter?.write(frame)
+    }
+
+    private async readMessages(readable: ReadableStream<Uint8Array>): Promise<void> {
+        const reader = readable.getReader()
+        let buffered = new Uint8Array()
+        while (true) {
+            const result = await reader.read()
+            if (result.done) return
+            const merged = new Uint8Array(buffered.length + result.value.length)
+            merged.set(buffered)
+            merged.set(result.value, buffered.length)
+            buffered = merged
+            while (buffered.length >= 4) {
+                const length = new DataView(buffered.buffer, buffered.byteOffset).getUint32(0)
+                if (buffered.length < length + 4) break
+                const json = new TextDecoder().decode(buffered.subarray(4, length + 4))
+                buffered = buffered.slice(length + 4)
+                this.onMessage(JSON.parse(json) as WebSocketClientboundMessage)
+            }
+        }
+    }
+
+    private async readUnidirectionalStreams(): Promise<void> {
+        try {
+            const streams = this.transport.incomingUnidirectionalStreams.getReader()
+            while (true) {
+                const streamResult = await streams.read()
+                if (streamResult.done) return
+                const readable = streamResult.value
+                const reader = readable.getReader()
+                const chunks: Uint8Array[] = []
+                while (true) {
+                    const result = await reader.read()
+                    if (result.done) break
+                    chunks.push(result.value)
+                }
+                const total = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.length, 0))
+                let offset = 0
+                for (const chunk of chunks) {
+                    total.set(chunk, offset)
+                    offset += chunk.length
+                }
+                this.onBinary(copyBytes(total))
+            }
+        } catch {
+            this.close()
+        }
+    }
+
+    private async readDatagrams(): Promise<void> {
+        try {
+            const reader = this.transport.datagrams.readable.getReader()
+            while (true) {
+                const result = await reader.read()
+                if (result.done) return
+                this.onBinary(copyBytes(result.value))
+            }
+        } catch {
+            this.close()
+        }
+    }
+
+    private onMessage(message: WebSocketClientboundMessage): void {
+        if ("Response" in message) {
+            const response = message.Response
+            this.logger?.debug(`received stream response: ${JSON.stringify(response)}`)
+            this.wasConnected = true
+            this.connectData = {
+                videoType: "data",
+                videoSetup: { codec: getSelectedVideoCodec(response.video_codec) ?? "h264", width: this.options?.width ?? 0, height: this.options?.height ?? 0, fps: this.options?.fps ?? 0 },
+                audioType: "data",
+                audioSetup: { channels: response.audio_channel_count, sampleRate: response.audio_sample_rate, streams: response.audio_coupled_streams, coupledStreams: response.audio_coupled_streams, samplesPerFrame: response.audio_samples_per_frame, mapping: response.audio_mapping },
+                capabilities: { touch: true },
+                appName: response.app_name ?? "Unknown",
+            }
+            this.internalOnConnect()
+            this.onconnect?.(this.connectData)
+        } else if ("Stats" in message) {
+            if ("Pong" in message.Stats) this.onPongReceive(message.Stats.Pong)
+            else if ("RelayRtt" in message.Stats) this.relayStats = { rttMs: message.Stats.RelayRtt.rtt_ms, rttVarianceMs: message.Stats.RelayRtt.rtt_variance_ms }
+        }
+    }
+
+    private onBinary(data: Uint8Array<ArrayBuffer>): void {
+        if (data.length == 0) return
+        const channel = data[0]
+        if (channel == WebSocketChannel.CONTROL) this.controlStream.onRawPacket(data.subarray(1))
+        else if (channel == WebSocketChannel.VIDEO) {
+            this.videoPipeline?.submitPacket(data.subarray(1))
+            if (this.videoPipeline && "pollRequestIdr" in this.videoPipeline && typeof this.videoPipeline.pollRequestIdr == "function" && this.videoPipeline.pollRequestIdr()) {
+                this.controlStream.sendRaw(new ControlPacket.RequestIdr())
+            }
+        } else if (channel == WebSocketChannel.AUDIO) this.audioPipeline?.submitPacket(data.subarray(1))
+    }
+
+    async startStream(options: TransportOptions): Promise<void> {
+        await this.onOpen
+        this.options = options
+        await this.writeMessage({
+            Request: {
+                host_id: options.hostId, app_id: options.appId, width: options.width, height: options.height, fps: options.fps, bitrate: options.bitrate,
+                hdr: options.hdr, local_audio_play_mode: options.localAudioPlayMode, supported_codecs: createSupportedVideoFormatsBits(options.supportedCodecs),
+                preferred_codecs: options.preferredCodecs ? createSupportedVideoFormatsBits(options.preferredCodecs) : 0,
+            }
+        })
+    }
+
+    setVideoPipeline(type: "videotrack", pipeline: (TrackVideoRenderer & VideoRenderer)): Promise<void>
+    setVideoPipeline(type: "data", pipeline: (DataPipe & VideoRenderer)): Promise<void>
+    async setVideoPipeline(type: TransportVideoType, pipeline: unknown): Promise<void> {
+        if (type != "data") throw `invalid web transport video pipeline type ${type}`
+        this.videoPipeline = pipeline as DataPipe
+    }
+
+    setAudioPipeline(type: "audiotrack", pipeline: unknown): Promise<void>
+    setAudioPipeline(type: "data", pipeline: (DataPipe & AudioPlayer)): Promise<void>
+    async setAudioPipeline(type: TransportAudioType, pipeline: unknown): Promise<void> {
+        if (type != "data") throw `invalid web transport audio pipeline type ${type}`
+        this.audioPipeline = pipeline as DataPipe
+    }
+
+    async getStats(): Promise<Record<string, StatValue>> {
+        const out: Record<string, StatValue> = {}
+        if (this.connectData) {
+            out.codec = this.connectData.videoSetup.codec
+            out.resolution = `Width: ${this.connectData.videoSetup.width}, Height: ${this.connectData.videoSetup.height}, Fps: ${this.connectData.videoSetup.fps}`
+        }
+        if (this.relayStats) {
+            out.hostToRelayRttMs = this.relayStats.rttMs
+            out.hostToRelayRttVarianceMs = this.relayStats.rttVarianceMs
+        }
+        out.relayToClientRttMs = await this.doPing()
+        return out
+    }
+
+    private onPongReceive(_id: number): void {
+        this.pongReceiveResolve?.()
+    }
+
+    private async doPing(): Promise<number> {
+        await this.onConnected
+        if (this.onPongPromise) return await this.onPongPromise
+        this.onPongPromise = new Promise(resolve => {
+            const start = performance.now()
+            this.pongReceiveResolve = () => {
+                this.pongReceiveResolve = null
+                this.onPongPromise = null
+                resolve(performance.now() - start)
+            }
+        })
+        await this.writeMessage({ Stats: { Ping: Math.floor(Math.random() * 1000) } })
+        return await this.onPongPromise
+    }
+
+    async sendControl(packet: ControlPacket, config: ControlPacketConfig): Promise<void> {
+        await this.onOpen
+        const raw = controlPacketSerialize(config, packet)
+        if (!raw) return
+        const packetView = new Uint8Array(raw)
+        const message = new Uint8Array(1 + packetView.length)
+        message[0] = WebSocketChannel.CONTROL
+        message.set(packetView, 1)
+        const writer = this.transport.datagrams.writable.getWriter()
+        if (message.length <= this.transport.datagrams.maxDatagramSize) {
+            await writer.write(message)
+            writer.releaseLock()
+        } else {
+            writer.releaseLock()
+            const stream = await this.transport.createUnidirectionalStream()
+            const streamWriter = stream.getWriter()
+            await streamWriter.write(message)
+            await streamWriter.close()
+            streamWriter.releaseLock()
+        }
+    }
+
+    async close(): Promise<void> {
+        this.transport.close()
+        if (!this.closedDispatched) {
+            this.closedDispatched = true
+            this.onclose?.(this.wasConnected ? "failed" : "failednoconnect")
+        }
+    }
+}
+
+class WebTransportControlStream implements IControlStream {
+    onreceive: ((packet: ControlPacket) => void) | null = null
+    private batcher = new InputBatcher()
+    private batchSendTimeout: number | null = null
+    private packetBuffer: ControlPacket[] = []
+    constructor(private transport: WebTransportTransport, private config: ControlPacketConfig) { }
+    send(input: ClientInputEvent): void {
+        for (const packet of this.batcher.batchInput(input)) this.sendRaw(packet)
+        if (this.batchSendTimeout == null) this.batchSendTimeout = globalObject().setTimeout(this.boundSendBatchedInputs, 1)
+    }
+    sendRaw(packet: ControlPacket): void {
+        this.packetBuffer.push(packet)
+        void this.flush()
+    }
+    private async flush(): Promise<void> {
+        const packets = this.packetBuffer.splice(0)
+        for (const packet of packets) await this.transport.sendControl(packet, this.config)
+    }
+    onRawPacket(packetBuffer: Uint8Array): void {
+        const packet = controlPacketDeserialize(this.config, PacketDirection.ClientBound, packetBuffer.slice().buffer)
+        if (packet && this.onreceive) this.onreceive(packet)
+    }
+    private boundSendBatchedInputs = this.sendBatchedInputs.bind(this)
+    private sendBatchedInputs(): void {
+        this.batchSendTimeout = null
+        for (const packet of this.batcher.removeBatchedInputs()) this.sendRaw(packet)
+    }
+}
+
+function hexToArrayBuffer(value: string): ArrayBuffer {
+    const bytes = new Uint8Array(value.length / 2)
+    for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(value.substring(i * 2, i * 2 + 2), 16)
+    return bytes.buffer
+}
+
+function copyBytes(value: Uint8Array): Uint8Array<ArrayBuffer> {
+    const bytes = new Uint8Array(value.length)
+    bytes.set(value)
+    return bytes
+}

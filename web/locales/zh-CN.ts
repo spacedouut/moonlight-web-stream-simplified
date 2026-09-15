@@ -99,6 +99,7 @@ export const zhCN: Translations = {
         webrtcDisconnectTimeout: "WebRTC 断连超时（秒）",
         auto: "自动",
         webSocket: "WebSocket",
+        webTransport: "WebTransport（实验性）",
         enterFullscreenOnStreamStart: "首次操作串流时进入全屏",
         toggleFullscreenWithKeybind: "按 Ctrl + Shift + I 切换全屏和鼠标锁定",
         style: "样式",

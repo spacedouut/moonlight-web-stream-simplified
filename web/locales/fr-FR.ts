@@ -99,6 +99,7 @@ export const frFr: Translations = {
         webrtcDisconnectTimeout: "Délai de Déconnexion WebRTC (secondes)",
         auto: "Auto",
         webSocket: "Web Socket",
+        webTransport: "WebTransport (expérimental)",
         enterFullscreenOnStreamStart: "Passer en plein écran à la première interaction avec la diffusion",
         toggleFullscreenWithKeybind: "Basculer entre le mode plein écran et le verrouillage de la souris avec Ctrl + Shift + I",
         style: "Style",

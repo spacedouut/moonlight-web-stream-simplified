@@ -1,31 +1,22 @@
-use std::{pin::pin, sync::Arc, time::Duration};
+use std::{pin::pin, time::Duration};
 
 use crate::api::bindings::{
     StreamStatsClientboundMessage, StreamStatsServerboundMessage, WebSocketChannel,
-    WebSocketClientboundMessage, WebSocketServerboundMessage, WebSocketStreamResponse,
+    WebSocketClientboundMessage, WebSocketServerboundMessage,
 };
 use actix_web::{Error, HttpRequest, HttpResponse, get, rt::spawn, web::Payload};
 use actix_ws::{Message, MessageStream, Session};
 use bytes::Bytes;
-use moonlight_common::{
-    AppId,
-    crypto::rustcrypto::RustCryptoBackend,
-    stream::{
-        AesIv, AesKey, EncryptionFlags, MoonlightStreamSettings, StreamingConfig,
-        audio::AudioConfig,
-        control::ActiveGamepads,
-        proto::{
-            MoonlightStreamSetup,
-            audio::AudioStreamEvent,
-            control::{
-                ControlStreamEvent,
-                packet::{ControlPacket, ControlPacketConfig, PacketDirection},
-            },
-            video::VideoStreamEvent,
+use moonlight_common::stream::{
+    proto::{
+        audio::AudioStreamEvent,
+        control::{
+            ControlStreamEvent,
+            packet::{ControlPacket, ControlPacketConfig, PacketDirection},
         },
-        tokio::{MoonlightStream, MoonlightStreamEvent},
-        video::{ColorRange, ColorSpace, VideoCapabilities, VideoFormats},
+        video::VideoStreamEvent,
     },
+    tokio::{MoonlightStream, MoonlightStreamEvent},
 };
 use tokio::{
     select,
@@ -35,8 +26,8 @@ use tokio::{
 use tracing::{Instrument, debug, debug_span, error, info, instrument, trace, warn};
 
 use crate::{
-    api::stream::create_control_packet_config,
-    app::{App, AppError, host::HostId},
+    api::stream::{create_control_packet_config, start_moonlight_stream},
+    app::{App, AppError},
 };
 
 enum WsData {
@@ -109,93 +100,8 @@ async fn handle_ws(
         }
     };
 
-    // -- Get host
-    let host_id = HostId(stream_request.host_id);
-    let mut host = app.host(host_id).await?;
-    let host = host.use_host().await?;
-
-    if !host.is_paired().await.map_err(AppError::from)? {
-        return Err(AppError::HostNotPaired);
-    }
-
-    // -- Get Apps
-    let app_id = AppId(stream_request.app_id);
-    let apps = host.app_list().await?;
-    let app_title = apps
-        .into_iter()
-        .find(|app| app.id == app_id)
-        .map(|app| app.title);
-
-    // -- Start stream
-    // get settings
-    let mut settings = MoonlightStreamSettings {
-        width: stream_request.width,
-        height: stream_request.height,
-        fps: stream_request.fps,
-        fps_x100: stream_request.fps * 100,
-        bitrate: stream_request.bitrate,
-        packet_size: 2048,
-        encryption_flags: EncryptionFlags::AUDIO | EncryptionFlags::FOUNDATION_MICROPHONE,
-        streaming_remotely: StreamingConfig::Auto,
-        sops: true,
-        hdr: stream_request.hdr,
-        supported_video_formats: VideoFormats::from_bits_retain(stream_request.supported_codecs),
-        // TODO: color range?
-        color_space: ColorSpace::Rec709,
-        color_range: ColorRange::Limited,
-        local_audio_play_mode: stream_request.local_audio_play_mode,
-        audio_config: AudioConfig::STEREO,
-        gamepads_attached: ActiveGamepads::empty(),
-        gamepads_persist_after_disconnect: false,
-        // TODO: mic?
-        enable_mic: false,
-    };
-
-    // adjust settings
-    let server_version = host.version().await?;
-    let gfe_version = host.gfe_version().await?;
-    let server_codec_mode_support = host.server_codec_mode_support().await?;
-    settings.adjust_for_server(server_version, &gfe_version, server_codec_mode_support)?;
-
-    // encryption
-    let aes_key = AesKey::new_random(&RustCryptoBackend)?;
-    let aes_iv = AesIv::new_random(&RustCryptoBackend)?;
-
-    info!(settings = ?settings, "starting stream");
-
-    // start stream
-    let config = host
-        .start_stream(
-            app_id,
-            &settings,
-            aes_key,
-            aes_iv,
-            MoonlightStreamSetup::launch_query_parameters(),
-        )
-        .await?;
-
-    let stream = MoonlightStream::connect(
-        config,
-        settings,
-        Arc::new(RustCryptoBackend),
-        VideoCapabilities::default(),
-    )
-    .await?;
-
-    // send stream start response
-    let audio_setup = stream.audio_setup();
-    let video_setup = stream.video_setup();
-
-    let response = WebSocketClientboundMessage::Response(WebSocketStreamResponse {
-        video_codec: video_setup.format as u32,
-        audio_sample_rate: audio_setup.sample_rate,
-        audio_channel_count: audio_setup.channel_count,
-        audio_streams: audio_setup.streams,
-        audio_coupled_streams: audio_setup.coupled_streams,
-        audio_samples_per_frame: audio_setup.samples_per_frame,
-        audio_mapping: audio_setup.mapping,
-        app_name: app_title,
-    });
+    let (stream, stream_response) = start_moonlight_stream(&app, &stream_request).await?;
+    let response = WebSocketClientboundMessage::Response(stream_response);
     info!(response = ?response, "sending response to client");
 
     let (mut ws_channel_sender, mut ws_channel_receiver) = unbounded_channel();

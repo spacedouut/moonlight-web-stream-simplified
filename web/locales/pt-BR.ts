@@ -99,6 +99,7 @@ export const ptBR: Translations = {
         webrtcDisconnectTimeout: "Timeout de Desconexão WebRTC (segundos)",
         auto: "Automático",
         webSocket: "WebSocket",
+        webTransport: "WebTransport (experimental)",
         enterFullscreenOnStreamStart: "Entrar em Tela Cheia na Primeira Interação com o Stream",
         toggleFullscreenWithKeybind: "Alternar Tela Cheia e Bloqueio do Mouse com Ctrl + Shift + I",
         style: "Estilo",

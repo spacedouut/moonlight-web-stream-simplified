@@ -291,6 +291,14 @@ pub struct WebSocketStreamResponse {
     pub app_name: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, TS)]
+#[ts(export, export_to = EXPORT_PATH)]
+pub struct WebTransportConfigResponse {
+    pub url: Option<String>,
+    pub port: u16,
+    pub certificate_hash: Option<String>,
+}
+
 // Virtual-Key Codes
 // https://github.com/awakecoding/Win32Keyboard/blob/master/vkcodes.h
 ts_consts!(

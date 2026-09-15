@@ -32,7 +32,7 @@ use actix_web::{
 use tracing::{error, info, trace};
 
 use crate::{
-    api::api_service,
+    api::{api_service, stream::web_transport::spawn_web_transport_server},
     app::App,
     cli::{Cli, Command},
     human_json::preprocess_human_json,
@@ -310,12 +310,29 @@ async fn start(config: Config) -> Result<(), anyhow::Error> {
         };
         let private_key = PrivateKeyDer::from_pem_file(&certificate.private_key_pem)?;
 
-        let config = ServerConfig::builder()
+        let tls_config = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(certificate_chain, private_key)?;
 
-        server.bind_rustls_0_23(bind_address, config)?.run().await?;
+        if let Some(web_transport) = config.web_server.web_transport.as_ref() {
+            spawn_web_transport_server(
+                app.clone(),
+                tls_config.clone(),
+                web_transport,
+                &config.web_server.url_path_prefix,
+            )?;
+        }
+
+        server
+            .bind_rustls_0_23(bind_address, tls_config)?
+            .run()
+            .await?;
     } else {
+        if app.config().web_server.web_transport.is_some() {
+            tracing::warn!(
+                "WebTransport is configured but requires a TLS certificate; not starting it"
+            );
+        }
         server.bind(bind_address)?.run().await?;
     }
 
