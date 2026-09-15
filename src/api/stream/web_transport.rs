@@ -7,7 +7,7 @@
 //! Video packets use unidirectional streams, while audio packets use
 //! datagrams when they fit and unidirectional streams otherwise.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use actix_web::{
     get,
@@ -29,7 +29,10 @@ use rustls::{ServerConfig, pki_types::pem::PemObject};
 use sha2::{Digest, Sha256};
 use tokio::{
     select,
-    sync::mpsc::{self, UnboundedSender},
+    sync::{
+        Semaphore,
+        mpsc::{self, Sender, error::TrySendError},
+    },
     time::{interval, timeout},
 };
 use tracing::{Instrument, debug_span, error, info, instrument, trace, warn};
@@ -109,9 +112,9 @@ async fn read_frame(stream: &mut wtransport::RecvStream) -> Result<Option<Vec<u8
         return Err(AppError::StreamClosed);
     }
     let mut body = vec![0; len];
-    stream
-        .read_exact(&mut body)
+    timeout(Duration::from_secs(5), stream.read_exact(&mut body))
         .await
+        .map_err(|_| AppError::StreamClosed)?
         .map_err(|_| AppError::StreamClosed)?;
     Ok(Some(body))
 }
@@ -183,8 +186,9 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
     };
     let (stream, response) = start_moonlight_stream(&app, &request).await?;
 
-    let (sender, mut sender_rx) = mpsc::unbounded_channel::<Outgoing>();
+    let (sender, mut sender_rx) = mpsc::channel::<Outgoing>(512);
     let sender_connection = connection.clone();
+    let uni_semaphore = Arc::new(Semaphore::new(64));
     tokio::spawn(
         async move {
             while let Some(outgoing) = sender_rx.recv().await {
@@ -214,8 +218,13 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
                         }
                     }
                     Outgoing::Uni(bytes) => {
+                        let Ok(permit) = uni_semaphore.clone().try_acquire_owned() else {
+                            trace!("dropping web transport unidirectional frame: too many streams");
+                            continue;
+                        };
                         let connection = sender_connection.clone();
                         tokio::spawn(async move {
+                            let _permit = permit;
                             let Ok(opening) = connection.open_uni().await else {
                                 return;
                             };
@@ -230,9 +239,11 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
         }
         .instrument(debug_span!("web transport sender")),
     );
-    send_message(&sender, WebSocketClientboundMessage::Response(response));
+    if !send_message(&sender, WebSocketClientboundMessage::Response(response)) {
+        return Err(AppError::StreamClosed);
+    }
 
-    let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<Incoming>();
+    let (incoming_tx, mut incoming_rx) = mpsc::channel::<Incoming>(256);
     let reader_tx = incoming_tx.clone();
     tokio::spawn(async move {
         loop {
@@ -242,30 +253,32 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
                         warn!("received empty web transport frame");
                         continue;
                     };
-                    match *kind {
+                    let incoming = match *kind {
                         0 => match serde_json::from_slice(payload) {
-                            Ok(message) => {
-                                if reader_tx.send(Incoming::Message(message)).is_err() {
-                                    break;
-                                }
-                            }
+                            Ok(message) => Incoming::Message(message),
                             Err(err) => {
-                                warn!(error = %err, "failed to deserialize web transport message")
+                                warn!(error = %err, "failed to deserialize web transport message");
+                                continue;
                             }
                         },
-                        1 => {
-                            if reader_tx
-                                .send(Incoming::Binary(Bytes::copy_from_slice(payload)))
-                                .is_err()
-                            {
-                                break;
-                            }
+                        1 => Incoming::Binary(Bytes::copy_from_slice(payload)),
+                        kind => {
+                            warn!(kind, "received unknown web transport frame kind");
+                            continue;
                         }
-                        kind => warn!(kind, "received unknown web transport frame kind"),
+                    };
+                    match reader_tx.try_send(incoming) {
+                        Ok(()) => {}
+                        Err(TrySendError::Full(_)) => {
+                            warn!("web transport incoming queue is full");
+                            let _ = reader_tx.send(Incoming::Closed).await;
+                            break;
+                        }
+                        Err(TrySendError::Closed(_)) => break,
                     }
                 }
                 _ => {
-                    let _ = reader_tx.send(Incoming::Closed);
+                    let _ = reader_tx.send(Incoming::Closed).await;
                     break;
                 }
             }
@@ -314,20 +327,25 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
                     }
                     _ => continue,
                 };
-                let _ = sender.send(data);
+                if !enqueue(&sender, data) {
+                    break;
+                }
             }
             _ = relay_stats_ticker.tick() => {
-                if let Ok(rtt) = stream.estimated_rtt() {
-                    send_message(&sender, WebSocketClientboundMessage::Stats(StreamStatsClientboundMessage::RelayRtt {
+                if let Ok(rtt) = stream.estimated_rtt()
+                    && !send_message(&sender, WebSocketClientboundMessage::Stats(StreamStatsClientboundMessage::RelayRtt {
                         rtt_ms: rtt.rtt.as_millis() as u32,
                         rtt_variance_ms: rtt.rtt_variance.as_millis() as u32,
-                    }));
+                    })) {
+                    break;
                 }
             }
             incoming = incoming_rx.recv() => {
                 match incoming {
                     Some(Incoming::Message(WebSocketServerboundMessage::Stats(StreamStatsServerboundMessage::Ping(id)))) => {
-                        send_message(&sender, WebSocketClientboundMessage::Stats(StreamStatsClientboundMessage::Pong(id)));
+                        if !send_message(&sender, WebSocketClientboundMessage::Stats(StreamStatsClientboundMessage::Pong(id))) {
+                            break;
+                        }
                     }
                     Some(Incoming::Binary(bytes)) => {
                         if bytes.first() == Some(&WebSocketChannel::CONTROL)
@@ -348,9 +366,29 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
     Ok(())
 }
 
-fn send_message(sender: &UnboundedSender<Outgoing>, message: WebSocketClientboundMessage) {
+fn enqueue(sender: &Sender<Outgoing>, out: Outgoing) -> bool {
+    match sender.try_send(out) {
+        Ok(()) => true,
+        Err(TrySendError::Full(out)) => match out {
+            Outgoing::Uni(_) | Outgoing::Datagram(_) => {
+                trace!("dropping web transport media frame: outgoing queue is full");
+                true
+            }
+            Outgoing::Message(_) | Outgoing::Binary(_) => {
+                warn!("web transport outgoing queue is full");
+                false
+            }
+        },
+        Err(TrySendError::Closed(_)) => false,
+    }
+}
+
+fn send_message(sender: &Sender<Outgoing>, message: WebSocketClientboundMessage) -> bool {
     trace!(message = ?message, "sending web transport message");
     if let Ok(text) = serde_json::to_string(&message) {
-        let _ = sender.send(Outgoing::Message(text));
+        enqueue(sender, Outgoing::Message(text))
+    } else {
+        warn!("failed to serialize web transport message");
+        false
     }
 }
