@@ -103,8 +103,12 @@ const MAX_FRAME: usize = 1 << 20;
 async fn read_frame(stream: &mut wtransport::RecvStream) -> Result<Option<Vec<u8>>, AppError> {
     let mut header = [0; 4];
     stream
-        .read_exact(&mut header)
+        .read_exact(&mut header[..1])
         .await
+        .map_err(|_| AppError::StreamClosed)?;
+    timeout(Duration::from_secs(5), stream.read_exact(&mut header[1..]))
+        .await
+        .map_err(|_| AppError::StreamClosed)?
         .map_err(|_| AppError::StreamClosed)?;
     let len = u32::from_be_bytes(header) as usize;
     if len > MAX_FRAME {
