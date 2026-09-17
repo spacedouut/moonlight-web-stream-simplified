@@ -315,7 +315,9 @@ fn get_video_formats(sdp: &Session) -> HashMap<VideoFormat, RTCRtpCodecParameter
     let mut formats = HashMap::default();
 
     // -- Find and extract codec and sdp fmtp line
-    let mut codec_and_clock_rate = HashMap::<_, (&str, _)>::default();
+    // Keep the offer's order: the first listed payload type is the client's
+    // preferred codec and should win over later aliases of the same format.
+    let mut codec_and_clock_rate = Vec::<(u8, (&str, u32))>::new();
     let mut sdp_fmtp_lines = HashMap::<_, &str>::default();
 
     for media in &sdp.medias {
@@ -331,7 +333,7 @@ fn get_video_formats(sdp: &Session) -> HashMap<VideoFormat, RTCRtpCodecParameter
                         continue;
                     };
 
-                    codec_and_clock_rate.insert(pt, (codec, clock_rate));
+                    codec_and_clock_rate.push((pt, (codec, clock_rate)));
                 }
                 "fmtp" => {
                     let Some((pt, sdp_fmtp_line)) = parse_fmtp(value) else {
@@ -373,19 +375,16 @@ fn get_video_formats(sdp: &Session) -> HashMap<VideoFormat, RTCRtpCodecParameter
                 }
             }
 
-            formats.insert(
-                format,
-                RTCRtpCodecParameters {
-                    rtp_codec: RTCRtpCodec {
-                        mime_type: MIME_TYPE_H264.to_string(),
-                        sdp_fmtp_line: sdp_fmtp_line.to_string(),
-                        clock_rate: *clock_rate,
-                        rtcp_feedback: rtcp_feedback(),
-                        ..Default::default()
-                    },
-                    payload_type: *pt,
+            formats.entry(format).or_insert(RTCRtpCodecParameters {
+                rtp_codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_H264.to_string(),
+                    sdp_fmtp_line: sdp_fmtp_line.to_string(),
+                    clock_rate: *clock_rate,
+                    rtcp_feedback: rtcp_feedback(),
+                    ..Default::default()
                 },
-            );
+                payload_type: *pt,
+            });
         } else if codec.eq_ignore_ascii_case("H265") {
             // Get profile
             let mut format = VideoFormat::H265;
@@ -401,19 +400,16 @@ fn get_video_formats(sdp: &Session) -> HashMap<VideoFormat, RTCRtpCodecParameter
                 }
             }
 
-            formats.insert(
-                format,
-                RTCRtpCodecParameters {
-                    rtp_codec: RTCRtpCodec {
-                        mime_type: MIME_TYPE_HEVC.to_string(),
-                        sdp_fmtp_line: sdp_fmtp_line.to_string(),
-                        clock_rate: *clock_rate,
-                        rtcp_feedback: rtcp_feedback(),
-                        ..Default::default()
-                    },
-                    payload_type: *pt,
+            formats.entry(format).or_insert(RTCRtpCodecParameters {
+                rtp_codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_HEVC.to_string(),
+                    sdp_fmtp_line: sdp_fmtp_line.to_string(),
+                    clock_rate: *clock_rate,
+                    rtcp_feedback: rtcp_feedback(),
+                    ..Default::default()
                 },
-            );
+                payload_type: *pt,
+            });
         } else if codec.eq_ignore_ascii_case("AV1") {
             // Get profile
             let mut format = VideoFormat::Av1Main8;
@@ -433,19 +429,16 @@ fn get_video_formats(sdp: &Session) -> HashMap<VideoFormat, RTCRtpCodecParameter
                 }
             }
 
-            formats.insert(
-                format,
-                RTCRtpCodecParameters {
-                    rtp_codec: RTCRtpCodec {
-                        mime_type: MIME_TYPE_AV1.to_string(),
-                        sdp_fmtp_line: sdp_fmtp_line.to_string(),
-                        clock_rate: *clock_rate,
-                        rtcp_feedback: rtcp_feedback(),
-                        ..Default::default()
-                    },
-                    payload_type: *pt,
+            formats.entry(format).or_insert(RTCRtpCodecParameters {
+                rtp_codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_AV1.to_string(),
+                    sdp_fmtp_line: sdp_fmtp_line.to_string(),
+                    clock_rate: *clock_rate,
+                    rtcp_feedback: rtcp_feedback(),
+                    ..Default::default()
                 },
-            );
+                payload_type: *pt,
+            });
         }
     }
 
