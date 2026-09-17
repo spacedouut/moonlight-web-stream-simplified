@@ -20,7 +20,6 @@ use rtc::{
     rtp::{
         Header, Packet,
         codec::{av1::Av1Payloader, h264::H264Payloader, h265::RTP_OUTBOUND_MTU},
-        extension::{HeaderExtension, playout_delay_extension::PlayoutDelayExtension},
         packetizer::Payloader,
     },
     rtp_transceiver::{
@@ -41,10 +40,7 @@ use webrtc::{
     peer_connection::PeerConnection,
 };
 
-use crate::{
-    api::stream::webrtc::{ext_color_space::ColorSpaceExtension, video::h265::H265Payloader},
-    app::AppError,
-};
+use crate::{api::stream::webrtc::video::h265::H265Payloader, app::AppError};
 
 mod h265;
 
@@ -54,6 +50,8 @@ pub enum VideoChannelEvent {
 
 enum Message {
     Frame(OwnedVideoFrame),
+    // Carried for future HDR support; currently dropped on receipt.
+    #[allow(dead_code)]
     HdrMetadata(Option<SunshineHdrMetadata>),
 }
 
@@ -155,20 +153,17 @@ impl VideoChannel {
             async move {
                 let mut sequence_number = 0u16;
 
-                let mut hdr_metadata = None;
-
                 while let Some(message) = frame_receiver.recv().await {
                     let frame = match message {
-                        Message::HdrMetadata(metadata) => {
-                            hdr_metadata = metadata;
-                            continue;
-                        }
+                        // TODO: apply HDR metadata via a negotiated header extension
+                        Message::HdrMetadata(_) => continue,
                         Message::Frame(frame) => frame,
                     };
                     let frame = frame.as_ref();
 
                     let timestamp =
-                        (frame.metadata.timestamp.as_millis() * clock_rate as u128 / 1000) as u32;
+                        (frame.metadata.timestamp.as_nanos() * clock_rate as u128 / 1_000_000_000)
+                            as u32;
 
                     let mut payloads = Vec::with_capacity(10);
 
@@ -232,44 +227,20 @@ impl VideoChannel {
 
                         let is_last = i == len - 1;
 
-                        let extensions: &[HeaderExtension] =
-                            if is_last && let Some(_metadata) = &hdr_metadata {
-                                // TODO: find correct hdr fields
-                                let _color_space = ColorSpaceExtension::default();
-
-                                &[
-                                    HeaderExtension::PlayoutDelay(PlayoutDelayExtension {
-                                        min_delay: 0,
-                                        max_delay: 0,
-                                    }),
-                                    // HeaderExtension::Custom {
-                                    //     uri: Cow::Borrowed(COLOR_SPACE_URI),
-                                    //     extension: Box::new(ColorSpaceExtension {}),
-                                    // },
-                                ]
-                            } else {
-                                &[HeaderExtension::PlayoutDelay(PlayoutDelayExtension {
-                                    min_delay: 0,
-                                    max_delay: 0,
-                                })]
-                            };
-
-                        if let Err(err) = track.write_rtp_with_extensions(
-                                Packet {
-                                    header: Header {
-                                        version: 2,
-                                        // Marker needs to mark the end of one frame
-                                        marker: is_last,
-                                        sequence_number,
-                                        timestamp,
-                                        payload_type,
-                                        ssrc,
-                                        ..Default::default()
-                                    },
-                                    payload,
+                        if let Err(err) = track
+                            .write_rtp(Packet {
+                                header: Header {
+                                    version: 2,
+                                    // Marker needs to mark the end of one frame
+                                    marker: is_last,
+                                    sequence_number,
+                                    timestamp,
+                                    payload_type,
+                                    ssrc,
+                                    ..Default::default()
                                 },
-                                extensions,
-                            )
+                                payload,
+                            })
                             .await
                         {
                             warn!(error = %err, "failed to send video packet");
