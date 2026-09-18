@@ -96,6 +96,7 @@ export const frFr: Translations = {
         other: "Autre",
         language: "Langue",
         dataTransport: "Transport des données",
+        webrtcDisconnectTimeout: "Délai de Déconnexion WebRTC (secondes)",
         auto: "Auto",
         webSocket: "Web Socket",
         enterFullscreenOnStreamStart: "Passer en plein écran à la première interaction avec la diffusion",

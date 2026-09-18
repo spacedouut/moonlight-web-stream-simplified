@@ -96,6 +96,7 @@ export const koKR: Translations = {
         other: "기타",
         language: "언어",
         dataTransport: "데이터 전송 방식",
+        webrtcDisconnectTimeout: "WebRTC 연결 끊김 시간 초과 (초)",
         auto: "자동",
         webSocket: "웹 소켓 (Web Socket)",
         enterFullscreenOnStreamStart: "스트림 첫 상호작용 시 전체 화면으로 전환",

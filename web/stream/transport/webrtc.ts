@@ -11,10 +11,11 @@ import { StatValue } from "../stats"
 import { TrackVideoRenderer, VideoRenderer } from "../video/index"
 import { generateControlPacketConfig, IControlStream, Transport, TransportAudioType, TransportConnectData, TransportOptions, TransportShutdown, TransportVideoType } from "./index"
 
-// Grace period for a persistent "disconnected" state. A one-way path failure
-// can keep ICE consent checks alive on the working leg while media is dead,
-// so the peer may sit at "disconnected" forever without reaching "failed".
-const DISCONNECTED_GRACE_MS = 10000
+// Grace period bounds for a persistent "disconnected" state. A one-way path
+// failure can keep ICE consent checks alive on the working leg while media is
+// dead, so the peer may sit at "disconnected" forever without reaching "failed".
+const DISCONNECTED_GRACE_MIN_SEC = 1
+const DISCONNECTED_GRACE_MAX_SEC = 15
 
 export class WebRTCTransport implements Transport {
 
@@ -31,8 +32,11 @@ export class WebRTCTransport implements Transport {
     private peer: RTCPeerConnection
     private location: string | null = null
 
-    constructor(api: Api, configuration: RTCConfiguration, logger?: Logger) {
+    private disconnectGraceMs: number
+
+    constructor(api: Api, configuration: RTCConfiguration, disconnectTimeoutSec: number, logger?: Logger) {
         this.logger = logger
+        this.disconnectGraceMs = Math.min(Math.max(disconnectTimeoutSec, DISCONNECTED_GRACE_MIN_SEC), DISCONNECTED_GRACE_MAX_SEC) * 1000
 
         this.api = api
 
@@ -189,7 +193,7 @@ export class WebRTCTransport implements Transport {
                     if (this.peer.connectionState == "disconnected") {
                         this.onclose?.("disconnect")
                     }
-                }, DISCONNECTED_GRACE_MS)
+                }, this.disconnectGraceMs)
             }
         } else if (this.peer.connectionState == "failed" || this.peer.connectionState == "closed") {
             this.cancelDisconnectTimer()

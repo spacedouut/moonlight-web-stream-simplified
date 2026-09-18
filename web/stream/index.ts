@@ -280,6 +280,7 @@ export class Stream implements Component {
             {
                 iceServers: config.iceServers,
             },
+            this.settings.webrtcDisconnectTimeout,
             this.logger
         )
         transport.controlStream.onreceive = this.boundReceivePacket

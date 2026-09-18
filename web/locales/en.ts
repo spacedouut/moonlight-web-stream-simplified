@@ -94,6 +94,7 @@ export const en = {
         other: "Other",
         language: "Language",
         dataTransport: "Data Transport",
+        webrtcDisconnectTimeout: "WebRTC Disconnect Timeout (seconds)",
         auto: "Auto",
         webSocket: "Web Socket",
         enterFullscreenOnStreamStart: "Enter Fullscreen On First Stream Interaction",

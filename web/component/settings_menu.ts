@@ -28,6 +28,7 @@ export type Settings = {
     localCursorSensitivity: number
     controllerConfig: ControllerConfig
     dataTransport: TransportType
+    webrtcDisconnectTimeout: number
     language: Language
     enterFullscreenOnStreamStart: boolean
     toggleFullscreenWithKeybind: boolean
@@ -154,6 +155,7 @@ export class StreamSettingsComponent implements Component {
     private controllerSendIntervalOverride: InputComponent
 
     private dataTransport: SelectComponent
+    private webrtcDisconnectTimeout: InputComponent
     private language: SelectComponent
     private toggleFullscreenWithKeybind: InputComponent
 
@@ -496,6 +498,18 @@ export class StreamSettingsComponent implements Component {
         this.dataTransport.addChangeListener(this.onSettingsChange.bind(this))
         this.dataTransport.mount(advancedSection)
 
+        this.webrtcDisconnectTimeout = new InputComponent("webrtcDisconnectTimeout", "number", i.webrtcDisconnectTimeout, {
+            defaultValue: defaultSettings_.webrtcDisconnectTimeout.toString(),
+            value: settings?.webrtcDisconnectTimeout?.toString(),
+            step: "1",
+            numberSlider: {
+                range_min: 1,
+                range_max: 15
+            }
+        })
+        this.webrtcDisconnectTimeout.addChangeListener(this.onSettingsChange.bind(this))
+        this.webrtcDisconnectTimeout.mount(advancedSection)
+
         this.sidebarEdge = new SelectComponent("sidebarEdge", [
             { value: "left", name: i.left },
             { value: "right", name: i.right },
@@ -647,6 +661,10 @@ export class StreamSettingsComponent implements Component {
         }
 
         settings.dataTransport = this.dataTransport.getValue() as any
+        const disconnectTimeout = parseInt(this.webrtcDisconnectTimeout.getValue())
+        settings.webrtcDisconnectTimeout = Number.isFinite(disconnectTimeout)
+            ? Math.min(Math.max(Math.trunc(disconnectTimeout), 1), 15)
+            : globalDefaultSettings().webrtcDisconnectTimeout
         settings.language = this.language.getValue() as Language
 
         settings.enterFullscreenOnStreamStart = this.displayMode.getValue() == "fullscreen"
