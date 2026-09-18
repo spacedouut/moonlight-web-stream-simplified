@@ -72,10 +72,12 @@ export class WebGpuFrameDrawPipe implements FrameVideoRenderer {
         if (!this.context || !this.device) {
             return
         }
+        // GPUTextureUsage: RENDER_ATTACHMENT (0x10) | COPY_DST (0x02)
         this.context.configure({
             device: this.device,
             format: navigator.gpu!.getPreferredCanvasFormat(),
-            alphaMode: "opaque"
+            alphaMode: "opaque",
+            usage: 0x10 | 0x02
         })
     }
 
