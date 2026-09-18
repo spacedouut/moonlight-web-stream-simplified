@@ -11,6 +11,19 @@ import { StatValue } from "../stats"
 import { TrackVideoRenderer, VideoRenderer } from "../video/index"
 import { generateControlPacketConfig, IControlStream, Transport, TransportAudioType, TransportConnectData, TransportOptions, TransportShutdown, TransportVideoType } from "./index"
 
+// Grace period bounds for a persistent "disconnected" state. A one-way path
+// failure can keep ICE consent checks alive on the working leg while media is
+// dead, so the peer may sit at "disconnected" forever without reaching "failed".
+const DISCONNECTED_GRACE_MIN_SEC = 1
+const DISCONNECTED_GRACE_MAX_SEC = 15
+
+// A wedged decoder leaves the transport fully alive — RTP packets still arrive
+// while framesDecoded stays frozen and the receiver PLI-storms. That state
+// recovers only by renegotiating, so poll the inbound stats and treat a stream
+// that keeps receiving packets without decoding any as a disconnect.
+const STALL_CHECK_INTERVAL_MS = 1000
+const DECODE_STALL_TIMEOUT_TICKS = 5
+
 export class WebRTCTransport implements Transport {
 
     readonly implementationName: string = "webrtc"
@@ -26,8 +39,11 @@ export class WebRTCTransport implements Transport {
     private peer: RTCPeerConnection
     private location: string | null = null
 
-    constructor(api: Api, configuration: RTCConfiguration, logger?: Logger) {
+    private disconnectGraceMs: number
+
+    constructor(api: Api, configuration: RTCConfiguration, disconnectTimeoutSec: number, logger?: Logger) {
         this.logger = logger
+        this.disconnectGraceMs = Math.min(Math.max(disconnectTimeoutSec, DISCONNECTED_GRACE_MIN_SEC), DISCONNECTED_GRACE_MAX_SEC) * 1000
 
         this.api = api
 
@@ -67,17 +83,29 @@ export class WebRTCTransport implements Transport {
         this.logger?.debug("Setting webrtc local description")
         await this.peer.setLocalDescription(offer)
 
+        const gatheringComplete = new Promise<void>(resolve => {
+            const onGatheringStateChange = () => {
+                if (this.peer.iceGatheringState == "complete") {
+                    this.peer.removeEventListener("icegatheringstatechange", onGatheringStateChange)
+                    resolve()
+                }
+            }
+
+            this.peer.addEventListener("icegatheringstatechange", onGatheringStateChange)
+            onGatheringStateChange()
+        })
+        await Promise.race([gatheringComplete, wait(300)])
+
         // Insert custom options
         this.sdpOfferOptions = {
             ...options
         }
-        const sdp = webrtcSessionOfferApply(offer.sdp ?? "", this.sdpOfferOptions)
+        const localDescription = this.peer.localDescription!
+        this.pendingIceCandidates = []
+        const sdp = webrtcSessionOfferApply(localDescription.sdp ?? "", this.sdpOfferOptions)
 
         this.logger?.debug(`successfully generated webrtc sdp with options ${JSON.stringify(this.sdpOfferOptions)}`)
         console.debug("Client Sdp", sdp)
-
-        this.logger?.debug(`starting ice candidate sender`)
-        this.sendIceCandidates()
 
         return sdp
     }
@@ -93,6 +121,7 @@ export class WebRTCTransport implements Transport {
         }
 
         this.location = response.location
+        this.flushIceCandidates()
 
         this.sdpAnswer = webrtcSessionAnswerParse(response.answerSdp)
         this.logger?.debug(`Server responded with extensions ${JSON.stringify(this.sdpAnswer)}`)
@@ -144,16 +173,100 @@ export class WebRTCTransport implements Transport {
     }
 
     private wasConnected = false
+    private disconnectTimer: number | null = null
+    private cancelDisconnectTimer() {
+        if (this.disconnectTimer != null) {
+            globalObject().clearTimeout(this.disconnectTimer)
+            this.disconnectTimer = null
+        }
+    }
+
+    private stallCheckInterval: number | null = null
+    private lastStallPacketsReceived = 0
+    private lastStallFramesDecoded = 0
+    private stallTicks = 0
+    private stopStallWatchdog() {
+        if (this.stallCheckInterval != null) {
+            globalObject().clearInterval(this.stallCheckInterval)
+            this.stallCheckInterval = null
+        }
+        this.stallTicks = 0
+        this.lastStallPacketsReceived = 0
+        this.lastStallFramesDecoded = 0
+    }
+    private async checkDecodeStall() {
+        if (this.closed || this.peer.connectionState != "connected") {
+            return
+        }
+
+        try {
+            let packetsReceived = 0
+            let framesDecoded = 0
+            const stats = await this.peer.getStats()
+            for (const [, stat] of stats) {
+                if (stat.type == "inbound-rtp" && (stat.kind == "video" || stat.mediaType == "video")) {
+                    packetsReceived = Math.max(packetsReceived, stat.packetsReceived ?? 0)
+                    framesDecoded = Math.max(framesDecoded, stat.framesDecoded ?? 0)
+                }
+            }
+
+            // Only a stream that is still receiving packets is a dead decoder;
+            // no packets at all is a legitimate quiet period.
+            if (packetsReceived > this.lastStallPacketsReceived && framesDecoded <= this.lastStallFramesDecoded) {
+                this.stallTicks++
+                if (this.stallTicks >= DECODE_STALL_TIMEOUT_TICKS) {
+                    this.logger?.debug("video decode stalled while packets kept arriving, reconnecting")
+                    this.stopStallWatchdog()
+                    this.onclose?.("disconnect")
+                    return
+                }
+            } else {
+                this.stallTicks = 0
+            }
+
+            this.lastStallPacketsReceived = packetsReceived
+            this.lastStallFramesDecoded = framesDecoded
+        } catch (e) {
+            this.logger?.debug(`decode stall check failed: ${e}`)
+        }
+    }
+    private startStallWatchdog() {
+        if (this.stallCheckInterval == null) {
+            this.lastStallPacketsReceived = 0
+            this.lastStallFramesDecoded = 0
+            this.stallTicks = 0
+            this.stallCheckInterval = globalObject().setInterval(() => {
+                this.checkDecodeStall()
+            }, STALL_CHECK_INTERVAL_MS)
+        }
+    }
+
     private onStateChange() {
         if (this.peer.connectionState == "connected") {
+            this.cancelDisconnectTimer()
             this.wasConnected = true
+            this.startStallWatchdog()
 
             this.generateConnectData().then(connectData => {
                 if (this.onconnect) {
                     this.onconnect(connectData)
                 }
+            }).catch(e => {
+                this.logger?.debug(`failed to generate connect data: ${e}`)
+                this.close()
             })
+        } else if (this.peer.connectionState == "disconnected") {
+            if (this.wasConnected && this.disconnectTimer == null) {
+                this.disconnectTimer = globalObject().setTimeout(() => {
+                    this.disconnectTimer = null
+                    if (this.peer.connectionState == "disconnected") {
+                        this.onclose?.("disconnect")
+                    }
+                }, this.disconnectGraceMs)
+            }
         } else if (this.peer.connectionState == "failed" || this.peer.connectionState == "closed") {
+            this.cancelDisconnectTimer()
+
             const shutdown = this.wasConnected ? "failed" : "failednoconnect"
 
             if (this.onclose) {
@@ -163,8 +276,9 @@ export class WebRTCTransport implements Transport {
     }
 
     // -- Trickle Ice
-    private iceCandidateSendTimer: number | null = null
     private pendingIceCandidates: Array<string> = []
+    private iceFlushChain: Promise<void> = Promise.resolve()
+    private iceRetryTimer: number | null = null
     private onIceCandidate(event: RTCPeerConnectionIceEvent) {
         if (!event.candidate) {
             // Ice Gathering finished
@@ -175,35 +289,43 @@ export class WebRTCTransport implements Transport {
         const candidate = event.candidate.toJSON().candidate
         if (candidate) {
             this.pendingIceCandidates.push(candidate)
+            this.flushIceCandidates()
         }
     }
 
-    private boundSendIceCandidates = this.sendIceCandidates.bind(this)
-    private async sendIceCandidates() {
-        this.iceCandidateSendTimer = null
-        if (this.iceCandidateSendTimer != null) {
-            globalObject().clearTimeout(this.iceCandidateSendTimer)
+    private flushIceCandidates() {
+        if (!this.location || this.pendingIceCandidates.length == 0) {
+            return
         }
 
-        for (const candidate of this.pendingIceCandidates) {
+        const location = this.location
+        const candidates = this.pendingIceCandidates.splice(0)
+        const trickleIceSdpFrag = candidates.map(x => `a=${x}`).join("\r\n")
+
+        for (const candidate of candidates) {
             this.logger?.debug(`sending ice candidate: ${candidate}`)
         }
 
-        if (this.location && this.pendingIceCandidates.length > 0) {
-            const trickleIceSdpFrag = this.pendingIceCandidates.map(x => `a=${x}`).join("\r\n")
-
-            await fetchApi(this.api, this.location, "PATCH", {
-                noUrlModify: true,
-                trickleIceSdpFrag,
-                response: "ignore",
-            })
-
-            this.pendingIceCandidates = []
-        }
-
-        if (this.peer.iceGatheringState != "complete") {
-            this.iceCandidateSendTimer = globalObject().setTimeout(this.boundSendIceCandidates, 2000)
-        }
+        this.iceFlushChain = this.iceFlushChain.then(async () => {
+            try {
+                await fetchApi(this.api, location, "PATCH", {
+                    noUrlModify: true,
+                    trickleIceSdpFrag,
+                    response: "ignore",
+                })
+            } catch (e) {
+                this.logger?.debug(`failed to PATCH ice candidates: ${e}`)
+                this.pendingIceCandidates.unshift(...candidates)
+                if (this.peer.connectionState != "closed" && this.peer.connectionState != "failed"
+                    && this.iceRetryTimer == null
+                ) {
+                    this.iceRetryTimer = globalObject().setTimeout(() => {
+                        this.iceRetryTimer = null
+                        this.flushIceCandidates()
+                    }, 1000)
+                }
+            }
+        })
     }
 
     // -- Control Stream / Media
@@ -275,13 +397,23 @@ export class WebRTCTransport implements Transport {
         }
     }
 
+    private closed = false
     async close(): Promise<void> {
+        if (this.closed) {
+            return
+        }
+        this.closed = true
+
+        this.cancelDisconnectTimer()
+        this.stopStallWatchdog()
+
+        if (this.iceRetryTimer != null) {
+            globalObject().clearTimeout(this.iceRetryTimer)
+            this.iceRetryTimer = null
+        }
+
         // Close the peer
         this.peer.close()
-
-        // Delete the ice candidate send loop
-        globalObject().clearTimeout(this.iceCandidateSendTimer)
-        this.iceCandidateSendTimer = null
 
         // Delete our current session on the server
         if (this.location) {
@@ -298,26 +430,49 @@ export class WebRTCTransport implements Transport {
     }
 
     private async findOutCodec(): Promise<keyof VideoFormats> {
-        let tries = 0
+        const codecFromMimeType = (mimeType: string | undefined): keyof VideoFormats | undefined => {
+            switch (mimeType?.toLowerCase()) {
+                case "video/h264":
+                    return "h264"
+                case "video/h265":
+                    return "h265"
+                case "video/av1":
+                    return "av1Main8"
+            }
+            return undefined
+        }
 
-        while (true) {
-            const stats = await this.peer.getStats()
-            for (const [_key, value] of stats) {
-                // Video Stream
-                if ("type" in value && "kind" in value
-                    && value.type == "inbound-rtp" && value.kind == "video"
-                ) {
+        const receiver = this.peer.getReceivers().find(receiver => receiver.track.kind == "video")
+        for (const codec of receiver?.getParameters().codecs ?? []) {
+            const receiverCodec = codecFromMimeType(codec.mimeType)
+            if (receiverCodec) {
+                return receiverCodec
+            }
+        }
 
+        const stats = await this.peer.getStats()
+        let inboundCodecId: string | undefined
+        for (const [_key, value] of stats) {
+            if ("type" in value && "kind" in value
+                && value.type == "inbound-rtp" && value.kind == "video"
+            ) {
+                inboundCodecId = value.codecId
+                break
+            }
+        }
+
+        if (inboundCodecId) {
+            const codec = stats.get(inboundCodecId)
+            if (codec && "type" in codec && codec.type == "codec" && "mimeType" in codec) {
+                const statsCodec = codecFromMimeType(codec.mimeType)
+                if (statsCodec) {
+                    return statsCodec
                 }
             }
-            tries += 1
-            if (tries > 10) {
-                this.logger?.debug(`failed to determine codec using stats after ${tries} tries, assuming h264`)
-                return "h264"
-            }
-
-            await wait(100)
         }
+
+        this.logger?.debug("failed to determine codec from receiver or stats, assuming h264")
+        return "h264"
     }
 
     private lastTotalDecodeTime = 0

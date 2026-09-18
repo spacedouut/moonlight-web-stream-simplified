@@ -212,6 +212,13 @@ export class Stream implements Component {
     private transport: Transport | null = null
 
     private setTransport(transport: Transport) {
+        if (this.isStopped) {
+            // A transport that finishes connecting after stop() began would
+            // otherwise stay open since stop() already captured its close promise
+            this.debugLog("Closing transport that connected after stop")
+            transport.close()
+            return
+        }
         if (this.transport) {
             this.debugLog("Closing old transport")
             this.transport.close()
@@ -251,17 +258,32 @@ export class Stream implements Component {
     private async tryWebRTCTransport(): Promise<TransportShutdown> {
         this.debugLog("Trying WebRTC transport")
 
-        // Get configuration
-        const config = await apiWebRTCConfiguration(this.api)
+        let config: Awaited<ReturnType<typeof apiWebRTCConfiguration>>
+        let options: Awaited<ReturnType<typeof this.createTransportOptions>>
+        try {
+            [config, options] = await Promise.all([
+                apiWebRTCConfiguration(this.api),
+                this.createTransportOptions(),
+            ])
+        } catch (error) {
+            this.debugLog(`failed to prepare WebRTC connection because ${error}`)
+            return "failednoconnect"
+        }
 
-        this.debugLog("Received WebRTC Config, Creating Transport")
+        this.debugLog("Received WebRTC config and transport options")
+
+        if (!options) {
+            return "failednoconnect"
+        }
 
         // Create transport
+        this.debugLog("Creating WebRTC transport")
         const transport = new WebRTCTransport(
             this.api,
             {
                 iceServers: config.iceServers,
             },
+            this.settings.webrtcDisconnectTimeout,
             this.logger
         )
         transport.controlStream.onreceive = this.boundReceivePacket
@@ -272,11 +294,6 @@ export class Stream implements Component {
         const onClose = new Promise<TransportShutdown>(resolve => {
             transport.onclose = resolve
         })
-
-        const options = await this.createTransportOptions()
-        if (!options) {
-            return "failednoconnect"
-        }
 
         try {
             // Create offer
@@ -319,7 +336,11 @@ export class Stream implements Component {
         // -- Connection successful
         await this.onConnect(connectData)
 
-        return await onClose
+        const shutdownReason = await onClose
+        // Free the peer and server-side session now; the reconnect loop only
+        // closes this transport once a replacement is fully set up
+        transport.close()
+        return shutdownReason
     }
     private async tryWebSocketTransport() {
         this.debugLog("Trying Web Socket transport")
@@ -755,11 +776,13 @@ export class Stream implements Component {
             })
             : null
 
+        const transportClosePromise = this.transport?.close()
+
         await this.releaseWakeLock()
         await quitAppPromise
 
         // Stop transport
-        await this.transport?.close()
+        await transportClosePromise
 
         return true
     }

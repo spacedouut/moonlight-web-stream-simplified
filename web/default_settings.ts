@@ -37,6 +37,8 @@ const trueDefaultSettings: Settings =
     },
     // possible values: "auto", "webrtc", "websocket"
     "dataTransport": "auto",
+    // seconds a persistent WebRTC "disconnected" state is tolerated before reconnecting (min 1, max 15)
+    "webrtcDisconnectTimeout": 5,
     "language": "en",
     "enterFullscreenOnStreamStart": false,
     "toggleFullscreenWithKeybind": false,

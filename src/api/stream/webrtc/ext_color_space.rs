@@ -1,3 +1,7 @@
+// Kept for future HDR support: the color-space extension is negotiated in the
+// media engine but nothing emits it yet.
+#![allow(dead_code)]
+
 use bytes::BufMut;
 use rtc::shared::marshal::{Marshal, MarshalSize};
 use webrtc::error::Error;
