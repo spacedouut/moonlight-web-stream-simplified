@@ -661,7 +661,7 @@ export class StreamSettingsComponent implements Component {
         }
 
         settings.dataTransport = this.dataTransport.getValue() as any
-        const disconnectTimeout = parseInt(this.webrtcDisconnectTimeout.getValue())
+        const disconnectTimeout = parseFloat(this.webrtcDisconnectTimeout.getValue())
         settings.webrtcDisconnectTimeout = Number.isFinite(disconnectTimeout)
             ? Math.min(Math.max(Math.trunc(disconnectTimeout), 1), 15)
             : globalDefaultSettings().webrtcDisconnectTimeout
