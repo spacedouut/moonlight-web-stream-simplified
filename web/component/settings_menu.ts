@@ -6,6 +6,7 @@ import { Component, ComponentEvent } from "./index"
 import { InputComponent, SelectComponent } from "./input"
 import { SidebarEdge } from "./sidebar/index"
 import { showCustomFpsPrompt, showCustomResolutionPrompt } from "./modal/custom_video"
+import { RenderMode } from "../stream/video/pipeline"
 
 export type Settings = {
     sidebarEdge: SidebarEdge,
@@ -21,6 +22,7 @@ export type Settings = {
     forceVideoElementRenderer: boolean
     canvasRenderer: boolean
     canvasVsync: boolean
+    renderMode: RenderMode
     playAudioLocal: boolean
     mouseScrollMode: MouseScrollMode
     mouseMode: MouseMode
@@ -137,6 +139,7 @@ export class StreamSettingsComponent implements Component {
     private forceVideoElementRenderer: InputComponent
     private canvasRenderer: InputComponent
     private canvasVsync: InputComponent
+    private renderMode: SelectComponent
     private hdr: InputComponent
 
     private videoSize: SelectComponent
@@ -355,6 +358,20 @@ export class StreamSettingsComponent implements Component {
         })
         this.canvasVsync.addChangeListener(this.onSettingsChange.bind(this))
         this.canvasVsync.mount(advancedSection)
+
+        // Render Mode
+        this.renderMode = new SelectComponent("renderMode", [
+            { value: "auto", name: i.auto },
+            { value: "video-element", name: i.renderModeVideoElement },
+            { value: "canvas", name: i.renderModeCanvas },
+            { value: "webgpu", name: "WebGPU" },
+            { value: "mse", name: i.renderModeMse },
+        ], {
+            displayName: i.renderMode,
+            preSelectedOption: settings?.renderMode ?? defaultSettings_.renderMode
+        })
+        this.renderMode.addChangeListener(this.onSettingsChange.bind(this))
+        this.renderMode.mount(advancedSection)
 
         // HDR
         this.hdr = new InputComponent("hdr", "checkbox", i.enableHdr, {
@@ -647,6 +664,7 @@ export class StreamSettingsComponent implements Component {
         settings.forceVideoElementRenderer = this.forceVideoElementRenderer.isChecked()
         settings.canvasRenderer = this.canvasRenderer.isChecked()
         settings.canvasVsync = this.canvasVsync.isChecked()
+        settings.renderMode = this.renderMode.getValue() as RenderMode
 
         settings.playAudioLocal = this.playAudioLocal.isChecked()
 

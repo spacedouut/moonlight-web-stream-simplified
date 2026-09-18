@@ -7,6 +7,7 @@ import { AudioMediaStreamTrackGeneratorPipe } from "../audio/media_stream_track_
 import { Logger } from "../log"
 import { OpenH264DecoderPipe } from "../video/openh264_decoder_pipe"
 import { CanvasFrameDrawPipe, CanvasRgbaFrameDrawPipe, CanvasYuv420FrameDrawPipe } from "../video/canvas_frame"
+import { WebGpuFrameDrawPipe } from "../video/webgpu_frame"
 import { DepacketizeVideoPipe } from "../video/depackitize_pipe"
 import { VideoMediaStreamTrackGeneratorPipe } from "../video/media_stream_track_generator_pipe"
 import { VideoMediaStreamTrackProcessorPipe } from "../video/media_stream_track_processor_pipe"
@@ -151,6 +152,7 @@ export function pipes(): Array<PipeStatic> {
         CanvasFrameDrawPipe,
         CanvasYuv420FrameDrawPipe,
         CanvasRgbaFrameDrawPipe,
+        WebGpuFrameDrawPipe,
         // Video Worker pipes
         WorkerVideoMediaStreamProcessorPipe,
         WorkerOffscreenCanvasSendPipe,

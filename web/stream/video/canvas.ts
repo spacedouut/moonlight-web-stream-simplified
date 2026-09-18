@@ -22,7 +22,7 @@ export class BaseCanvasVideoRenderer implements CanvasRenderer {
     private div: HTMLDivElement | null = ("document" in globalObject()) ? globalObject().document.createElement("div") : null
     protected canvas: HTMLCanvasElement | OffscreenCanvas | null = null
     private isTransferred = false
-    protected context: WebGLRenderingContext | WebGL2RenderingContext | (OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D) | null = null
+    protected context: WebGLRenderingContext | WebGL2RenderingContext | GPUCanvasContext | (OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D) | null = null
 
     private hdrEnabled: boolean = false
     private videoSize: [number, number] | null = null
@@ -62,8 +62,9 @@ export class BaseCanvasVideoRenderer implements CanvasRenderer {
 
     useCanvasContext(type: "webgl"): UseCanvasResult<WebGLRenderingContext>
     useCanvasContext(type: "webgl2"): UseCanvasResult<WebGL2RenderingContext>
+    useCanvasContext(type: "webgpu"): UseCanvasResult<GPUCanvasContext>
     useCanvasContext(type: "2d"): UseCanvasResult<(OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D)>
-    useCanvasContext(type: "webgl" | "webgl2" | "2d"): UseCanvasResult<WebGLRenderingContext> | UseCanvasResult<WebGL2RenderingContext> | UseCanvasResult<(OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D)> {
+    useCanvasContext(type: "webgl" | "webgl2" | "webgpu" | "2d"): UseCanvasResult<WebGLRenderingContext> | UseCanvasResult<WebGL2RenderingContext> | UseCanvasResult<GPUCanvasContext> | UseCanvasResult<(OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D)> {
         if (!this.canvas) {
             return {
                 context: null,
@@ -82,6 +83,8 @@ export class BaseCanvasVideoRenderer implements CanvasRenderer {
                 this.context = this.canvas.getContext("webgl", options) as WebGLRenderingContext | null
             } else if (type == "webgl2") {
                 this.context = this.canvas.getContext("webgl2", options) as WebGL2RenderingContext | null
+            } else if (type == "webgpu") {
+                this.context = this.canvas.getContext("webgpu") as GPUCanvasContext | null
             } else if (type == "2d") {
                 this.context = this.canvas.getContext("2d", options) as (CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) | null
             }
@@ -100,6 +103,11 @@ export class BaseCanvasVideoRenderer implements CanvasRenderer {
                 context: this.context
             }
         } else if (type == "webgl2" && this.context instanceof WebGL2RenderingContext) {
+            return {
+                error: null,
+                context: this.context
+            }
+        } else if (type == "webgpu" && "GPUCanvasContext" in globalObject() && this.context instanceof GPUCanvasContext) {
             return {
                 error: null,
                 context: this.context

@@ -616,7 +616,8 @@ export class Stream implements Component {
             supportedVideoCodecs: codecHint,
             canvasRenderer: this.settings.canvasRenderer,
             forceVideoElementRenderer: this.settings.forceVideoElementRenderer,
-            canvasVsync: this.settings.canvasVsync
+            canvasVsync: this.settings.canvasVsync,
+            renderMode: this.settings.renderMode
         }
 
         const info = await queryVideoPipelineInfo(type, videoSettings, this.logger)
@@ -660,7 +661,8 @@ export class Stream implements Component {
             supportedVideoCodecs,
             canvasRenderer: this.settings.canvasRenderer,
             forceVideoElementRenderer: this.settings.forceVideoElementRenderer,
-            canvasVsync: this.settings.canvasVsync
+            canvasVsync: this.settings.canvasVsync,
+            renderMode: this.settings.renderMode
         }
 
         let pipelineCodecSupport

@@ -39,6 +39,49 @@ declare global {
         prototype: VideoTrackGenerator
         new(): VideoTrackGenerator
     }
+
+    // WebGPU (minimal declarations, Chromium only): https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API
+    interface GPUAdapter {
+        requestDevice(): Promise<GPUDevice>
+    }
+
+    interface GPUTexture {
+        // opaque handle
+    }
+
+    interface GPUQueue {
+        copyExternalImageToTexture(
+            source: { source: VideoFrame | ImageBitmap | HTMLVideoElement | HTMLCanvasElement | OffscreenCanvas | ImageData },
+            destination: { texture: GPUTexture },
+            copySize: { width: number, height: number } | [number, number]
+        ): void
+    }
+
+    interface GPUDevice {
+        readonly queue: GPUQueue
+        readonly lost: Promise<{ reason: string, message: string }>
+        destroy(): void
+    }
+
+    interface GPUCanvasContext {
+        configure(configuration: { device: GPUDevice, format: string, alphaMode?: "opaque" | "premultiplied" }): void
+        unconfigure(): void
+        getCurrentTexture(): GPUTexture
+    }
+
+    interface GPU {
+        requestAdapter(): Promise<GPUAdapter | null>
+        getPreferredCanvasFormat(): string
+    }
+
+    interface Navigator {
+        readonly gpu?: GPU
+    }
+
+    var GPUCanvasContext: {
+        prototype: GPUCanvasContext
+        new(): GPUCanvasContext
+    }
 }
 
 

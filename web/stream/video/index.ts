@@ -134,6 +134,7 @@ export interface CanvasRenderer extends Pipe {
     /// Tries to create or reuse an already existing canvas context.
     useCanvasContext(type: "webgl"): UseCanvasResult<WebGLRenderingContext>
     useCanvasContext(type: "webgl2"): UseCanvasResult<WebGL2RenderingContext>
+    useCanvasContext(type: "webgpu"): UseCanvasResult<GPUCanvasContext>
     useCanvasContext(type: "2d"): UseCanvasResult<(OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D)>
 
     /// Sets the canvas to a specific size
