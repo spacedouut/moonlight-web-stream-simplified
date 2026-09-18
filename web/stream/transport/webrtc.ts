@@ -11,6 +11,11 @@ import { StatValue } from "../stats"
 import { TrackVideoRenderer, VideoRenderer } from "../video/index"
 import { generateControlPacketConfig, IControlStream, Transport, TransportAudioType, TransportConnectData, TransportOptions, TransportShutdown, TransportVideoType } from "./index"
 
+// Grace period for a persistent "disconnected" state. A one-way path failure
+// can keep ICE consent checks alive on the working leg while media is dead,
+// so the peer may sit at "disconnected" forever without reaching "failed".
+const DISCONNECTED_GRACE_MS = 10000
+
 export class WebRTCTransport implements Transport {
 
     readonly implementationName: string = "webrtc"
@@ -157,8 +162,16 @@ export class WebRTCTransport implements Transport {
     }
 
     private wasConnected = false
+    private disconnectTimer: number | null = null
+    private cancelDisconnectTimer() {
+        if (this.disconnectTimer != null) {
+            globalObject().clearTimeout(this.disconnectTimer)
+            this.disconnectTimer = null
+        }
+    }
     private onStateChange() {
         if (this.peer.connectionState == "connected") {
+            this.cancelDisconnectTimer()
             this.wasConnected = true
 
             this.generateConnectData().then(connectData => {
@@ -169,7 +182,18 @@ export class WebRTCTransport implements Transport {
                 this.logger?.debug(`failed to generate connect data: ${e}`)
                 this.close()
             })
+        } else if (this.peer.connectionState == "disconnected") {
+            if (this.wasConnected && this.disconnectTimer == null) {
+                this.disconnectTimer = globalObject().setTimeout(() => {
+                    this.disconnectTimer = null
+                    if (this.peer.connectionState == "disconnected") {
+                        this.onclose?.("disconnect")
+                    }
+                }, DISCONNECTED_GRACE_MS)
+            }
         } else if (this.peer.connectionState == "failed" || this.peer.connectionState == "closed") {
+            this.cancelDisconnectTimer()
+
             const shutdown = this.wasConnected ? "failed" : "failednoconnect"
 
             if (this.onclose) {
@@ -301,6 +325,8 @@ export class WebRTCTransport implements Transport {
     }
 
     async close(): Promise<void> {
+        this.cancelDisconnectTimer()
+
         if (this.iceRetryTimer != null) {
             globalObject().clearTimeout(this.iceRetryTimer)
             this.iceRetryTimer = null
