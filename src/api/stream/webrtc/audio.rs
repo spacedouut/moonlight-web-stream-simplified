@@ -8,10 +8,7 @@ use moonlight_common::{
 };
 use rtc::{
     media_stream::MediaStreamTrack,
-    rtp::{
-        Header, Packet,
-        extension::{HeaderExtension, playout_delay_extension::PlayoutDelayExtension},
-    },
+    rtp::{Header, Packet},
     rtp_transceiver::{
         SSRC,
         rtp_sender::{RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind},
@@ -79,7 +76,7 @@ impl AudioChannel {
                 let mut sequence_number = 0u16;
 
                 while let Some(frame) = frame_receiver.recv().await {
-                    let timestamp = (frame.timestamp.as_millis() * 48) as u32;
+                    let timestamp = (frame.timestamp.as_nanos() * 48_000 / 1_000_000_000) as u32;
 
                     trace!(len = ?frame.buffer.len(), timestamp = ?frame.timestamp, "audio frame");
 
@@ -87,23 +84,17 @@ impl AudioChannel {
 
                     // Opus doesn't need any special payloading: https://github.com/webrtc-rs/webrtc/blob/6b94718e23111df28125f96af4b0de8cbb3dfd0d/rtp/src/codecs/opus/mod.rs#L9-L24
                     if let Err(err) = track
-                        .write_rtp_with_extensions(
-                            Packet {
-                                header: Header {
-                                    version: 2,
-                                    sequence_number,
-                                    timestamp,
-                                    payload_type: 111,
-                                    ssrc,
-                                    ..Default::default()
-                                },
-                                payload: frame.buffer,
+                        .write_rtp(Packet {
+                            header: Header {
+                                version: 2,
+                                sequence_number,
+                                timestamp,
+                                payload_type: 111,
+                                ssrc,
+                                ..Default::default()
                             },
-                            &[HeaderExtension::PlayoutDelay(PlayoutDelayExtension {
-                                min_delay: 0,
-                                max_delay: 0,
-                            })],
-                        )
+                            payload: frame.buffer,
+                        })
                         .await
                     {
                         warn!(error = %err, "failed to send audio frame");

@@ -11,6 +11,19 @@ import { StatValue } from "../stats"
 import { TrackVideoRenderer, VideoRenderer } from "../video/index"
 import { generateControlPacketConfig, IControlStream, Transport, TransportAudioType, TransportConnectData, TransportOptions, TransportShutdown, TransportVideoType } from "./index"
 
+// Grace period bounds for a persistent "disconnected" state. A one-way path
+// failure can keep ICE consent checks alive on the working leg while media is
+// dead, so the peer may sit at "disconnected" forever without reaching "failed".
+const DISCONNECTED_GRACE_MIN_SEC = 1
+const DISCONNECTED_GRACE_MAX_SEC = 15
+
+// A wedged decoder leaves the transport fully alive — RTP packets still arrive
+// while framesDecoded stays frozen and the receiver PLI-storms. That state
+// recovers only by renegotiating, so poll the inbound stats and treat a stream
+// that keeps receiving packets without decoding any as a disconnect.
+const STALL_CHECK_INTERVAL_MS = 1000
+const DECODE_STALL_TIMEOUT_TICKS = 5
+
 export class WebRTCTransport implements Transport {
 
     readonly implementationName: string = "webrtc"
@@ -26,8 +39,11 @@ export class WebRTCTransport implements Transport {
     private peer: RTCPeerConnection
     private location: string | null = null
 
-    constructor(api: Api, configuration: RTCConfiguration, logger?: Logger) {
+    private disconnectGraceMs: number
+
+    constructor(api: Api, configuration: RTCConfiguration, disconnectTimeoutSec: number, logger?: Logger) {
         this.logger = logger
+        this.disconnectGraceMs = Math.min(Math.max(disconnectTimeoutSec, DISCONNECTED_GRACE_MIN_SEC), DISCONNECTED_GRACE_MAX_SEC) * 1000
 
         this.api = api
 
@@ -157,9 +173,79 @@ export class WebRTCTransport implements Transport {
     }
 
     private wasConnected = false
+    private disconnectTimer: number | null = null
+    private cancelDisconnectTimer() {
+        if (this.disconnectTimer != null) {
+            globalObject().clearTimeout(this.disconnectTimer)
+            this.disconnectTimer = null
+        }
+    }
+
+    private stallCheckInterval: number | null = null
+    private lastStallPacketsReceived = 0
+    private lastStallFramesDecoded = 0
+    private stallTicks = 0
+    private stopStallWatchdog() {
+        if (this.stallCheckInterval != null) {
+            globalObject().clearInterval(this.stallCheckInterval)
+            this.stallCheckInterval = null
+        }
+        this.stallTicks = 0
+        this.lastStallPacketsReceived = 0
+        this.lastStallFramesDecoded = 0
+    }
+    private async checkDecodeStall() {
+        if (this.closed || this.peer.connectionState != "connected") {
+            return
+        }
+
+        try {
+            let packetsReceived = 0
+            let framesDecoded = 0
+            const stats = await this.peer.getStats()
+            for (const [, stat] of stats) {
+                if (stat.type == "inbound-rtp" && (stat.kind == "video" || stat.mediaType == "video")) {
+                    packetsReceived = Math.max(packetsReceived, stat.packetsReceived ?? 0)
+                    framesDecoded = Math.max(framesDecoded, stat.framesDecoded ?? 0)
+                }
+            }
+
+            // Only a stream that is still receiving packets is a dead decoder;
+            // no packets at all is a legitimate quiet period.
+            if (packetsReceived > this.lastStallPacketsReceived && framesDecoded <= this.lastStallFramesDecoded) {
+                this.stallTicks++
+                if (this.stallTicks >= DECODE_STALL_TIMEOUT_TICKS) {
+                    this.logger?.debug("video decode stalled while packets kept arriving, reconnecting")
+                    this.stopStallWatchdog()
+                    this.onclose?.("disconnect")
+                    return
+                }
+            } else {
+                this.stallTicks = 0
+            }
+
+            this.lastStallPacketsReceived = packetsReceived
+            this.lastStallFramesDecoded = framesDecoded
+        } catch (e) {
+            this.logger?.debug(`decode stall check failed: ${e}`)
+        }
+    }
+    private startStallWatchdog() {
+        if (this.stallCheckInterval == null) {
+            this.lastStallPacketsReceived = 0
+            this.lastStallFramesDecoded = 0
+            this.stallTicks = 0
+            this.stallCheckInterval = globalObject().setInterval(() => {
+                this.checkDecodeStall()
+            }, STALL_CHECK_INTERVAL_MS)
+        }
+    }
+
     private onStateChange() {
         if (this.peer.connectionState == "connected") {
+            this.cancelDisconnectTimer()
             this.wasConnected = true
+            this.startStallWatchdog()
 
             this.generateConnectData().then(connectData => {
                 if (this.onconnect) {
@@ -169,7 +255,18 @@ export class WebRTCTransport implements Transport {
                 this.logger?.debug(`failed to generate connect data: ${e}`)
                 this.close()
             })
+        } else if (this.peer.connectionState == "disconnected") {
+            if (this.wasConnected && this.disconnectTimer == null) {
+                this.disconnectTimer = globalObject().setTimeout(() => {
+                    this.disconnectTimer = null
+                    if (this.peer.connectionState == "disconnected") {
+                        this.onclose?.("disconnect")
+                    }
+                }, this.disconnectGraceMs)
+            }
         } else if (this.peer.connectionState == "failed" || this.peer.connectionState == "closed") {
+            this.cancelDisconnectTimer()
+
             const shutdown = this.wasConnected ? "failed" : "failednoconnect"
 
             if (this.onclose) {
@@ -300,7 +397,16 @@ export class WebRTCTransport implements Transport {
         }
     }
 
+    private closed = false
     async close(): Promise<void> {
+        if (this.closed) {
+            return
+        }
+        this.closed = true
+
+        this.cancelDisconnectTimer()
+        this.stopStallWatchdog()
+
         if (this.iceRetryTimer != null) {
             globalObject().clearTimeout(this.iceRetryTimer)
             this.iceRetryTimer = null

@@ -280,6 +280,7 @@ export class Stream implements Component {
             {
                 iceServers: config.iceServers,
             },
+            this.settings.webrtcDisconnectTimeout,
             this.logger
         )
         transport.controlStream.onreceive = this.boundReceivePacket
@@ -332,7 +333,11 @@ export class Stream implements Component {
         // -- Connection successful
         await this.onConnect(connectData)
 
-        return await onClose
+        const shutdownReason = await onClose
+        // Free the peer and server-side session now; the reconnect loop only
+        // closes this transport once a replacement is fully set up
+        transport.close()
+        return shutdownReason
     }
     private async tryWebSocketTransport() {
         this.debugLog("Trying Web Socket transport")

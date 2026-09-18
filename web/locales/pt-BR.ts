@@ -96,6 +96,7 @@ export const ptBR: Translations = {
         other: "Outros",
         language: "Idioma",
         dataTransport: "Transporte de Dados",
+        webrtcDisconnectTimeout: "Timeout de Desconexão WebRTC (segundos)",
         auto: "Automático",
         webSocket: "WebSocket",
         enterFullscreenOnStreamStart: "Entrar em Tela Cheia na Primeira Interação com o Stream",

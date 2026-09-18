@@ -96,6 +96,7 @@ export const zhCN: Translations = {
         other: "其他",
         language: "语言",
         dataTransport: "传输方式",
+        webrtcDisconnectTimeout: "WebRTC 断连超时（秒）",
         auto: "自动",
         webSocket: "WebSocket",
         enterFullscreenOnStreamStart: "首次操作串流时进入全屏",
