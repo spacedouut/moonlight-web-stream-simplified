@@ -324,7 +324,13 @@ export class WebRTCTransport implements Transport {
         }
     }
 
+    private closed = false
     async close(): Promise<void> {
+        if (this.closed) {
+            return
+        }
+        this.closed = true
+
         this.cancelDisconnectTimer()
 
         if (this.iceRetryTimer != null) {
