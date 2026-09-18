@@ -35,6 +35,8 @@ const trueDefaultSettings: Settings =
         // possible values: null or a number, example: 60, 120
         "sendIntervalOverride": null
     },
+    // possible values: "auto", "video-element", "canvas", "webgpu", "mse"
+    "renderMode": "auto",
     // possible values: "auto", "webrtc", "websocket"
     "dataTransport": "auto",
     // seconds a persistent WebRTC "disconnected" state is tolerated before reconnecting (min 1, max 15)
