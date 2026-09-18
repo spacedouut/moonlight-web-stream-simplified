@@ -64,7 +64,7 @@ declare global {
     }
 
     interface GPUCanvasContext {
-        configure(configuration: { device: GPUDevice, format: string, alphaMode?: "opaque" | "premultiplied" }): void
+        configure(configuration: { device: GPUDevice, format: string, alphaMode?: "opaque" | "premultiplied", usage?: number }): void
         unconfigure(): void
         getCurrentTexture(): GPUTexture
     }
