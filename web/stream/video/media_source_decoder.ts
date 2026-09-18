@@ -7,7 +7,7 @@ import { emptyVideoCodecs } from "../video"
 import { h264NalType, H264StreamVideoTranslator } from "./annex_b_translator"
 import { DataVideoRenderer, UrlVideoRenderer, VideoDecodeUnit, VideoRendererSetup } from "./index"
 
-// auto download an mp4 file containing all data until a media source error occured, testing only
+// auto download an mp4 file containing all data until a media source error occurred, testing only
 const DEBUG_FILE = false
 
 export class MediaSourceDecoder implements DataVideoRenderer {

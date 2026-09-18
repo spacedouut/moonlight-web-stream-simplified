@@ -347,7 +347,7 @@ ts_consts!(
     pub const VK_CAPITAL: u16 = 0x14;
     // Input Method Editor (IME) Kana mode
     pub const VK_KANA: u16 = 0x15;
-    // IME Hanguel mode (maintained for compatibility; use #define VK_HANGUL)
+    // IME Hangul mode (maintained for compatibility; use #define VK_HANGUL)
     pub const VK_HANGUEL: u16 = 0x15;
     // IME Hangul mode
     pub const VK_HANGUL: u16 = 0x15;

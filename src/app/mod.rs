@@ -56,9 +56,9 @@ pub enum AppError {
     StreamConfig(#[from] StreamConfigError),
     #[error("failed to parse the given sdp: {0}")]
     WebRTCParse(#[from] WebRTCParseError),
-    #[error("rustcrypto error occured: {0}")]
+    #[error("rustcrypto error occurred: {0}")]
     RustCrypto(#[from] RustCryptoError),
-    #[error("hex error occured: {0}")]
+    #[error("hex error occurred: {0}")]
     Hex(#[from] FromHexError),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
