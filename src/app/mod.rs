@@ -50,13 +50,15 @@ pub enum AppError {
     WebRtcClientCodecNotSupported,
     #[error("the stream was already closed")]
     StreamClosed,
+    #[error("web transport is disabled")]
+    WebTransportDisabled,
     #[error("the host doesn't support the given config: {0}")]
     StreamConfig(#[from] StreamConfigError),
     #[error("failed to parse the given sdp: {0}")]
     WebRTCParse(#[from] WebRTCParseError),
-    #[error("rustcrypto error occured: {0}")]
+    #[error("rustcrypto error occurred: {0}")]
     RustCrypto(#[from] RustCryptoError),
-    #[error("hex error occured: {0}")]
+    #[error("hex error occurred: {0}")]
     Hex(#[from] FromHexError),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
@@ -79,6 +81,7 @@ impl ResponseError for AppError {
             Self::HostNotPaired => HttpResponse::Forbidden().finish(),
             Self::HostPaired => HttpResponse::NotModified().body("host already paired"),
             Self::StreamClosed => HttpResponse::NotFound().body("stream not found"),
+            Self::WebTransportDisabled => HttpResponse::NotFound().finish(),
             Self::WebRtcClientCodecNotSupported => HttpResponse::BadRequest().finish(),
             Self::WebRTCParse(_) => HttpResponse::BadRequest().finish(),
             _ => HttpResponse::InternalServerError().finish(),

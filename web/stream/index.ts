@@ -1,4 +1,4 @@
-import { Api, apiHostCancel, apiWebRTCConfiguration, apiWebRTCOffer } from "../api"
+import { Api, apiHostCancel, apiWebRTCConfiguration, apiWebRTCOffer, apiWebTransportConfig } from "../api"
 import { Component } from "../component/index"
 import { Settings, TransportType } from "../component/settings_menu"
 import { ControlPacket, ControlPacket_Tags, VideoFormats } from "../uniffi/moonlight_common_bindings"
@@ -11,6 +11,7 @@ import { gatherPipeInfo, pipeName } from "./pipeline/index"
 import { StreamStats } from "./stats"
 import { Transport, TransportAudioType, TransportConnectData, TransportOptions, TransportShutdown, TransportVideoType } from "./transport/index"
 import { WebSocketTransport } from "./transport/web_socket"
+import { WebTransportTransport } from "./transport/web_transport"
 import { WebRTCTransport } from "./transport/webrtc"
 import { allVideoCodecs, andVideoCodecs, emptyVideoCodecs, hasAnyCodec } from "./video"
 import { VideoRenderer, VideoRendererSetup } from "./video/index"
@@ -201,6 +202,8 @@ export class Stream implements Component {
             shutdownReason = await this.tryWebRTCTransport()
         } else if (desiredTransport == "websocket") {
             shutdownReason = await this.tryWebSocketTransport()
+        } else if (desiredTransport == "webtransport") {
+            shutdownReason = await this.tryWebTransportTransport()
         }
 
         return shutdownReason == "failed" || shutdownReason == "disconnect"
@@ -379,6 +382,51 @@ export class Stream implements Component {
         // -- Connection successful
         this.onConnect(connectData)
 
+        return await onClose
+    }
+
+    private async tryWebTransportTransport() {
+        this.debugLog("Trying WebTransport transport")
+
+        let config
+        try {
+            config = await apiWebTransportConfig(this.api)
+        } catch (error) {
+            this.debugLog(`failed to get WebTransport configuration because ${error}`)
+            return "failednoconnect" as const
+        }
+
+        const options = await this.createTransportOptions()
+        if (!options) return "failednoconnect" as const
+
+        let transport: WebTransportTransport
+        let onConnect: Promise<TransportConnectData>
+        let onClose: Promise<TransportShutdown>
+        try {
+            transport = new WebTransportTransport(this.api, config, this.logger)
+            transport.controlStream.onreceive = this.boundReceivePacket
+            onConnect = new Promise<TransportConnectData>(resolve => transport.onconnect = resolve)
+            onClose = new Promise<TransportShutdown>(resolve => transport.onclose = resolve)
+        } catch (error) {
+            this.debugLog(`failed to create WebTransport transport because ${error}`)
+            return "failednoconnect" as const
+        }
+
+        try {
+            await transport.startStream(options)
+        } catch (error) {
+            this.debugLog(`failed to connect using WebTransport because ${error}`)
+            await transport.close()
+            return "failednoconnect" as const
+        }
+
+        this.setTransport(transport)
+        const connectData = await Promise.race([onConnect, onClose])
+        if (typeof connectData == "string") {
+            await transport.close()
+            return connectData
+        }
+        this.onConnect(connectData)
         return await onClose
     }
 
@@ -568,7 +616,8 @@ export class Stream implements Component {
             supportedVideoCodecs: codecHint,
             canvasRenderer: this.settings.canvasRenderer,
             forceVideoElementRenderer: this.settings.forceVideoElementRenderer,
-            canvasVsync: this.settings.canvasVsync
+            canvasVsync: this.settings.canvasVsync,
+            renderMode: this.settings.renderMode
         }
 
         const info = await queryVideoPipelineInfo(type, videoSettings, this.logger)
@@ -612,7 +661,8 @@ export class Stream implements Component {
             supportedVideoCodecs,
             canvasRenderer: this.settings.canvasRenderer,
             forceVideoElementRenderer: this.settings.forceVideoElementRenderer,
-            canvasVsync: this.settings.canvasVsync
+            canvasVsync: this.settings.canvasVsync,
+            renderMode: this.settings.renderMode
         }
 
         let pipelineCodecSupport

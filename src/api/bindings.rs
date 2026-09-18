@@ -291,6 +291,14 @@ pub struct WebSocketStreamResponse {
     pub app_name: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, TS)]
+#[ts(export, export_to = EXPORT_PATH)]
+pub struct WebTransportConfigResponse {
+    pub url: Option<String>,
+    pub port: u16,
+    pub certificate_hash: Option<String>,
+}
+
 // Virtual-Key Codes
 // https://github.com/awakecoding/Win32Keyboard/blob/master/vkcodes.h
 ts_consts!(
@@ -339,7 +347,7 @@ ts_consts!(
     pub const VK_CAPITAL: u16 = 0x14;
     // Input Method Editor (IME) Kana mode
     pub const VK_KANA: u16 = 0x15;
-    // IME Hanguel mode (maintained for compatibility; use #define VK_HANGUL)
+    // IME Hangul mode (maintained for compatibility; use #define VK_HANGUL)
     pub const VK_HANGUEL: u16 = 0x15;
     // IME Hangul mode
     pub const VK_HANGUL: u16 = 0x15;

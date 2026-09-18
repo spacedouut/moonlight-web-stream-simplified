@@ -215,7 +215,7 @@ class ViewerApp implements Component {
             if (stats && stats.isEnabled()) {
                 this.statsDiv.hidden = false
 
-                const text = streamStatsToText(stats.getCurrentStats())
+                const text = streamStatsToText(stats.getCurrentStats(), stats.getLevel())
                 this.statsDiv.innerText = text
             } else {
                 this.statsDiv.hidden = true
@@ -906,7 +906,7 @@ class ConnectionInfoModal implements Modal<void> {
     private debugDetailButton = document.createElement("button")
     private closeButton = document.createElement("button")
 
-    private debugDetail = "" // We store this seperate because line breaks don't work when the element is not mounted on the dom
+    private debugDetail = "" // We store this separately because line breaks don't work when the element is not mounted on the DOM
     private debugDetailDisplay = document.createElement("div")
 
     constructor() {

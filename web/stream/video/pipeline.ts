@@ -17,6 +17,7 @@ import { OpenH264DecoderPipe } from "./openh264_decoder_pipe"
 import { VideoMediaStreamTrackGeneratorPipe } from "./media_stream_track_generator_pipe"
 import { Yuv420ToRgbaFramePipe } from "./video_frame"
 import { MediaSourceDecoder } from "./media_source_decoder"
+import { WebGpuFrameDrawPipe } from "./webgpu_frame"
 import { VideoFormats } from "../../uniffi/moonlight_common_bindings"
 
 // -- Gather information about the browser
@@ -32,10 +33,16 @@ const VIDEO_RENDERERS: Array<VideoRendererStatic> = [
 ]
 
 // -- Build the pipeline
+export type RenderMode = "auto" | "video-element" | "canvas" | "webgpu" | "mse"
+
 export type VideoPipelineOptions = {
     supportedVideoCodecs: VideoFormats
     canvasRenderer: boolean
     forceVideoElementRenderer: boolean
+    /// Preferred renderer family. "auto" picks the first supported pipeline
+    /// in PIPELINES order; any other value restricts selection to that mode
+    /// and falls back to automatic if no pipeline in the mode works.
+    renderMode?: RenderMode
     /// When true:
     /// - enable desynchronized in the context creation options (lower latency)
     /// - draw in submitFrame (low latency)
@@ -46,7 +53,7 @@ export type VideoPipelineOptions = {
 
 type PipelineResult<T> = { videoRenderer: T, supportedCodecs: VideoFormats, error: false } | { videoRenderer: null, supportedCodecs: null, error: true }
 
-type Pipeline = { input: string, pipes: Array<PipeStatic>, renderer: VideoRendererStatic }
+type Pipeline = { input: string, pipes: Array<PipeStatic>, renderer: VideoRendererStatic, mode: Exclude<RenderMode, "auto"> }
 
 export const WorkerVideoMediaStreamProcessorPipe = workerPipe("WorkerVideoMediaStreamProcessorPipe", { pipes: ["WorkerVideoTrackReceivePipe", "VideoMediaStreamTrackProcessorPipe", "WorkerVideoFrameSendPipe"] })
 export const WorkerVideoMediaStreamProcessorCanvasPipe = workerPipe("WorkerVideoMediaStreamProcessorCanvasPipe", { pipes: ["WorkerVideoTrackReceivePipe", "VideoMediaStreamTrackProcessorPipe", "CanvasFrameDrawPipe", "WorkerOffscreenCanvasSendPipe"] })
@@ -56,31 +63,35 @@ export const WorkerDataToCanvasGlRenderOpenH264Pipe = workerPipe("WorkerDataToCa
 const PIPELINES: Array<Pipeline> = [
     // -- track
     // Convert track -> video element, Default (should be supported everywhere)
-    { input: "videotrack", pipes: [], renderer: VideoElementRenderer },
+    { input: "videotrack", pipes: [], renderer: VideoElementRenderer, mode: "video-element" },
     // Convert track -> video frame -> canvas, Chromium
-    { input: "videotrack", pipes: [VideoMediaStreamTrackProcessorPipe, CanvasFrameDrawPipe], renderer: MainCanvasRenderer },
+    { input: "videotrack", pipes: [VideoMediaStreamTrackProcessorPipe, CanvasFrameDrawPipe], renderer: MainCanvasRenderer, mode: "canvas" },
     // Convert track -> video frame (in worker) -> canvas (in worker), Safari
-    { input: "videotrack", pipes: [WorkerVideoTrackSendPipe, WorkerVideoMediaStreamProcessorCanvasPipe], renderer: OffscreenCanvasRenderer },
+    { input: "videotrack", pipes: [WorkerVideoTrackSendPipe, WorkerVideoMediaStreamProcessorCanvasPipe], renderer: OffscreenCanvasRenderer, mode: "canvas" },
     // Convert track -> video frame (in worker) -> canvas, Safari
-    { input: "videotrack", pipes: [WorkerVideoTrackSendPipe, WorkerVideoMediaStreamProcessorPipe, WorkerVideoFrameReceivePipe], renderer: MainCanvasRenderer },
+    { input: "videotrack", pipes: [WorkerVideoTrackSendPipe, WorkerVideoMediaStreamProcessorPipe, WorkerVideoFrameReceivePipe], renderer: MainCanvasRenderer, mode: "canvas" },
+    // Convert track -> video frame -> canvas via WebGPU, Chromium
+    { input: "videotrack", pipes: [VideoMediaStreamTrackProcessorPipe, WebGpuFrameDrawPipe], renderer: MainCanvasRenderer, mode: "webgpu" },
     // -- data
     // - VideoDecoder
     // Convert data -> video frame (in worker) -> track (in worker, VideoTrackGenerator) -> video element, Safari
-    { input: "data", pipes: [DepacketizeVideoPipe, WorkerVideoDataSendPipe, WorkerDataToVideoTrackPipe, WorkerVideoTrackReceivePipe], renderer: VideoElementRenderer },
+    { input: "data", pipes: [DepacketizeVideoPipe, WorkerVideoDataSendPipe, WorkerDataToVideoTrackPipe, WorkerVideoTrackReceivePipe], renderer: VideoElementRenderer, mode: "video-element" },
     // Convert data -> video frame -> track (MediaStreamTrackGenerator) -> video element, Chromium
-    { input: "data", pipes: [DepacketizeVideoPipe, VideoDecoderPipe, VideoMediaStreamTrackGeneratorPipe], renderer: VideoElementRenderer },
+    { input: "data", pipes: [DepacketizeVideoPipe, VideoDecoderPipe, VideoMediaStreamTrackGeneratorPipe], renderer: VideoElementRenderer, mode: "video-element" },
     // Convert data -> video frame -> canvas, Default (Secure Context), Firefox
-    { input: "data", pipes: [DepacketizeVideoPipe, VideoDecoderPipe, CanvasFrameDrawPipe], renderer: MainCanvasRenderer },
+    { input: "data", pipes: [DepacketizeVideoPipe, VideoDecoderPipe, CanvasFrameDrawPipe], renderer: MainCanvasRenderer, mode: "canvas" },
     // - OpenH264 Decoder
     // Convert data -> decode -> draw using webgl (in worker) -> canvas
-    { input: "data", pipes: [DepacketizeVideoPipe, WorkerVideoDataSendPipe, WorkerDataToCanvasGlRenderOpenH264Pipe], renderer: OffscreenCanvasRenderer },
+    { input: "data", pipes: [DepacketizeVideoPipe, WorkerVideoDataSendPipe, WorkerDataToCanvasGlRenderOpenH264Pipe], renderer: OffscreenCanvasRenderer, mode: "canvas" },
     // Convert data -> decode -> draw using webgl -> canvas
-    { input: "data", pipes: [DepacketizeVideoPipe, OpenH264DecoderPipe, CanvasYuv420FrameDrawPipe], renderer: MainCanvasRenderer },
+    { input: "data", pipes: [DepacketizeVideoPipe, OpenH264DecoderPipe, CanvasYuv420FrameDrawPipe], renderer: MainCanvasRenderer, mode: "canvas" },
     // Convert data -> decode -> draw using image -> canvas
-    { input: "data", pipes: [DepacketizeVideoPipe, OpenH264DecoderPipe, Yuv420ToRgbaFramePipe, CanvasRgbaFrameDrawPipe], renderer: MainCanvasRenderer },
+    { input: "data", pipes: [DepacketizeVideoPipe, OpenH264DecoderPipe, Yuv420ToRgbaFramePipe, CanvasRgbaFrameDrawPipe], renderer: MainCanvasRenderer, mode: "canvas" },
+    // Convert data -> video frame -> canvas via WebGPU, Chromium
+    { input: "data", pipes: [DepacketizeVideoPipe, VideoDecoderPipe, WebGpuFrameDrawPipe], renderer: MainCanvasRenderer, mode: "webgpu" },
     // - MediaSourceDecoder
     // Convert data -> MediaSourceDecoder -> video element, Default (should be supported everywhere)
-    { input: "data", pipes: [DepacketizeVideoPipe, MediaSourceDecoder], renderer: UrlVideoElementRenderer },
+    { input: "data", pipes: [DepacketizeVideoPipe, MediaSourceDecoder], renderer: UrlVideoElementRenderer, mode: "mse" },
 ]
 
 const FORCE_CANVAS_PIPELINES: Array<Pipeline> = PIPELINES.filter(pipeline => pipeName(pipeline.renderer).includes("Canvas"))
@@ -151,33 +162,43 @@ async function selectPipeline(type: string, settings: VideoPipelineOptions, logg
             settings.supportedVideoCodecs.h264 = true
         }
 
-        return { input: "videotrack", pipes: [], renderer: VideoElementRenderer }
+        return { input: "videotrack", pipes: [], renderer: VideoElementRenderer, mode: "video-element" }
     }
 
     if (settings.canvasRenderer) {
         logger?.debug("Forcing canvas renderer")
 
         pipelines = FORCE_CANVAS_PIPELINES
+    } else if (settings.renderMode && settings.renderMode != "auto") {
+        logger?.debug(`Selecting pipelines for render mode "${settings.renderMode}"`)
+
+        pipelines = PIPELINES.filter(pipeline => pipeline.mode == settings.renderMode)
     } else {
         logger?.debug("Selecting pipeline automatically")
 
         pipelines = PIPELINES
     }
 
-    pipelineLoop: for (const pipeline of pipelines) {
-        if (pipeline.input != type) {
-            continue
+    // If a render mode filter yields no usable pipeline, fall back to automatic
+    const fallbackToAll = pipelines !== PIPELINES && !settings.canvasRenderer
+    const pipelineSets = fallbackToAll ? [pipelines, PIPELINES] : [pipelines]
+
+    for (const pipelineSet of pipelineSets) {
+        pipelineLoop: for (const pipeline of pipelineSet) {
+            if (pipeline.input != type) {
+                continue
+            }
+
+            const supportedCodecs = settings.supportedVideoCodecs
+            const pipelineInfo = await queryPipelineInfo(pipeline, supportedCodecs)
+
+            if (!hasAnyCodec(pipelineInfo?.supportedVideoCodecs ?? emptyVideoCodecs())) {
+                logger?.debug(`Not using pipe ${pipeline.pipes.map(pipeName).join(" -> ")} -> ${pipeName(pipeline.renderer)} (renderer) because it doesn't support any codec the user wants`)
+                continue pipelineLoop
+            }
+
+            return pipeline
         }
-
-        const supportedCodecs = settings.supportedVideoCodecs
-        const pipelineInfo = await queryPipelineInfo(pipeline, supportedCodecs)
-
-        if (!hasAnyCodec(pipelineInfo?.supportedVideoCodecs ?? emptyVideoCodecs())) {
-            logger?.debug(`Not using pipe ${pipeline.pipes.map(pipeName).join(" -> ")} -> ${pipeName(pipeline.renderer)} (renderer) because it doesn't support any codec the user wants`)
-            continue pipelineLoop
-        }
-
-        return pipeline
     }
 
     return null
@@ -243,64 +264,74 @@ export async function buildVideoPipeline(type: string, settings: VideoPipelineOp
         logger?.debug("Forcing canvas renderer")
 
         pipelines = FORCE_CANVAS_PIPELINES
+    } else if (settings.renderMode && settings.renderMode != "auto") {
+        logger?.debug(`Selecting pipelines for render mode "${settings.renderMode}"`)
+
+        pipelines = PIPELINES.filter(pipeline => pipeline.mode == settings.renderMode)
     } else {
         logger?.debug("Selecting pipeline automatically")
 
         pipelines = PIPELINES
     }
 
-    pipelineLoop: for (const pipeline of pipelines) {
-        if (pipeline.input != type) {
-            continue
-        }
+    // If a render mode filter yields no usable pipeline, fall back to automatic
+    const fallbackToAll = pipelines !== PIPELINES && !settings.canvasRenderer
+    const pipelineSets = fallbackToAll ? [pipelines, PIPELINES] : [pipelines]
 
-        // Check if supported and contains codecs
-        let supportedCodecs = settings.supportedVideoCodecs
-        for (const pipe of pipeline.pipes) {
-            const pipeInfo = pipesInfo.get(pipe)
-            if (!pipeInfo) {
-                logger?.debug(`Failed to query info for video pipe ${pipeName(pipe)}`)
+    for (const pipelineSet of pipelineSets) {
+        pipelineLoop: for (const pipeline of pipelineSet) {
+            if (pipeline.input != type) {
+                continue
+            }
+
+            // Check if supported and contains codecs
+            let supportedCodecs = settings.supportedVideoCodecs
+            for (const pipe of pipeline.pipes) {
+                const pipeInfo = pipesInfo.get(pipe)
+                if (!pipeInfo) {
+                    logger?.debug(`Failed to query info for video pipe ${pipeName(pipe)}`)
+                    continue pipelineLoop
+                }
+
+                if (!pipeInfo.environmentSupported) {
+                    continue pipelineLoop
+                }
+
+                if (pipeInfo.supportedVideoCodecs) {
+                    supportedCodecs = andVideoCodecs(supportedCodecs, pipeInfo.supportedVideoCodecs)
+                }
+            }
+
+            const rendererInfo = await pipeline.renderer.getInfo()
+            if (!rendererInfo) {
+                logger?.debug(`Failed to query info for video renderer ${pipeName(pipeline.renderer)}`)
                 continue pipelineLoop
             }
 
-            if (!pipeInfo.environmentSupported) {
+            if (!rendererInfo.environmentSupported) {
+                continue pipelineLoop
+            }
+            if (rendererInfo.supportedVideoCodecs) {
+                supportedCodecs = andVideoCodecs(supportedCodecs, rendererInfo.supportedVideoCodecs)
+            }
+
+            if (!hasAnyCodec(supportedCodecs)) {
+                logger?.debug(`Not using pipe ${pipeline.pipes.map(pipeName).join(" -> ")} -> ${pipeName(pipeline.renderer)} (renderer) because it doesn't support any codec the user wants`)
                 continue pipelineLoop
             }
 
-            if (pipeInfo.supportedVideoCodecs) {
-                supportedCodecs = andVideoCodecs(supportedCodecs, pipeInfo.supportedVideoCodecs)
+            // Build that pipeline
+            logger?.debug(`Trying to build pipeline: ${pipeline.pipes.map(pipeName).join(" -> ")} -> ${pipeName(pipeline.renderer)} (renderer)`)
+            const rendererOptions = { drawOnSubmit: !settings.canvasVsync }
+            const videoRenderer = buildPipeline(pipeline.renderer, { pipes: pipeline.pipes }, logger, rendererOptions)
+            if (!videoRenderer) {
+                logger?.debug(`Failed to build video pipeline: ${pipeline.pipes.map(pipeName).join(" -> ")} -> ${pipeName(pipeline.renderer)} (renderer)`)
+                continue pipelineLoop
             }
-        }
 
-        const rendererInfo = await pipeline.renderer.getInfo()
-        if (!rendererInfo) {
-            logger?.debug(`Failed to query info for video renderer ${pipeName(pipeline.renderer)}`)
-            continue pipelineLoop
+            logger?.debug(`Successfully built video pipeline: ${pipeline.pipes.map(pipeName).join(" -> ")} -> ${pipeName(pipeline.renderer)} (renderer)`)
+            return { videoRenderer: videoRenderer as VideoRenderer, supportedCodecs, error: false }
         }
-
-        if (!rendererInfo.environmentSupported) {
-            continue pipelineLoop
-        }
-        if (rendererInfo.supportedVideoCodecs) {
-            supportedCodecs = andVideoCodecs(supportedCodecs, rendererInfo.supportedVideoCodecs)
-        }
-
-        if (!hasAnyCodec(supportedCodecs)) {
-            logger?.debug(`Not using pipe ${pipeline.pipes.map(pipeName).join(" -> ")} -> ${pipeName(pipeline.renderer)} (renderer) because it doesn't support any codec the user wants`)
-            continue pipelineLoop
-        }
-
-        // Build that pipeline
-        logger?.debug(`Trying to build pipeline: ${pipeline.pipes.map(pipeName).join(" -> ")} -> ${pipeName(pipeline.renderer)} (renderer)`)
-        const rendererOptions = { drawOnSubmit: !settings.canvasVsync }
-        const videoRenderer = buildPipeline(pipeline.renderer, { pipes: pipeline.pipes }, logger, rendererOptions)
-        if (!videoRenderer) {
-            logger?.debug(`Failed to build video pipeline: ${pipeline.pipes.map(pipeName).join(" -> ")} -> ${pipeName(pipeline.renderer)} (renderer)`)
-            continue pipelineLoop
-        }
-
-        logger?.debug(`Successfully built video pipeline: ${pipeline.pipes.map(pipeName).join(" -> ")} -> ${pipeName(pipeline.renderer)} (renderer)`)
-        return { videoRenderer: videoRenderer as VideoRenderer, supportedCodecs, error: false }
     }
 
     let message = "No supported video renderer found! Tried all available pipelines."

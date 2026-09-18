@@ -171,8 +171,9 @@ export class WorkerOffscreenCanvasSendPipe extends WorkerSenderPipe implements C
 
     useCanvasContext(type: "webgl"): UseCanvasResult<WebGLRenderingContext>;
     useCanvasContext(type: "webgl2"): UseCanvasResult<WebGL2RenderingContext>;
+    useCanvasContext(type: "webgpu"): UseCanvasResult<GPUCanvasContext>;
     useCanvasContext(type: "2d"): UseCanvasResult<(OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D)>;
-    useCanvasContext(type: "webgl" | "webgl2" | "2d"): UseCanvasResult<WebGLRenderingContext> | UseCanvasResult<WebGL2RenderingContext> | UseCanvasResult<(OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D)> {
+    useCanvasContext(type: "webgl" | "webgl2" | "webgpu" | "2d"): UseCanvasResult<WebGLRenderingContext> | UseCanvasResult<WebGL2RenderingContext> | UseCanvasResult<GPUCanvasContext> | UseCanvasResult<(OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D)> {
         // @ts-ignore
         return this.renderer.useCanvasContext(type)
     }
