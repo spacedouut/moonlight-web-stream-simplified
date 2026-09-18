@@ -67,6 +67,8 @@ enum State {
 pub struct VideoChannel {
     video_formats: HashMap<VideoFormat, RTCRtpCodecParameters>,
     state: State,
+    selected_format: Option<VideoFormat>,
+    selected_payload_type: Option<u8>,
 }
 
 impl VideoChannel {
@@ -85,6 +87,8 @@ impl VideoChannel {
         Ok(Self {
             video_formats: video_formats_mapping,
             state: State::SelectVideoFormat,
+            selected_format: None,
+            selected_payload_type: None,
         })
     }
 
@@ -113,6 +117,8 @@ impl VideoChannel {
 
         let payload_type = codec.payload_type;
         let clock_rate = codec.rtp_codec.clock_rate;
+        self.selected_format = Some(format);
+        self.selected_payload_type = Some(payload_type);
 
         let track = Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
             "video".to_string(),
@@ -256,6 +262,14 @@ impl VideoChannel {
         Ok(())
     }
 
+    /// The payload type the answer should claim the true H264 profile for,
+    /// or None when the negotiated format is not plain H264.
+    pub fn h264_answer_payload_type(&self) -> Option<u8> {
+        (self.selected_format == Some(VideoFormat::H264))
+            .then_some(self.selected_payload_type)
+            .flatten()
+    }
+
     pub fn on_frame(&mut self, frame: OwnedVideoFrame) {
         match &mut self.state {
             State::SelectVideoFormat | State::Panic => {
@@ -312,7 +326,7 @@ impl VideoChannel {
 }
 
 fn get_video_formats(sdp: &Session) -> HashMap<VideoFormat, RTCRtpCodecParameters> {
-    let mut formats = HashMap::default();
+    let mut formats = HashMap::<VideoFormat, RTCRtpCodecParameters>::default();
 
     for media in &sdp.medias {
         // -- Find and extract codec and sdp fmtp line
@@ -366,20 +380,20 @@ fn get_video_formats(sdp: &Session) -> HashMap<VideoFormat, RTCRtpCodecParameter
                 }
 
                 // Get profile
-                let mut format = VideoFormat::H264;
+                let profile_level_id = sdp_fmtp_line
+                    .split(";")
+                    .filter_map(|attribute| attribute.split_once("="))
+                    .find(|(attribute, _)| attribute.trim() == "profile-level-id")
+                    .map(|(_, value)| value.trim());
 
-                let attributes = sdp_fmtp_line.split(";");
-                for (attribute, value) in
-                    attributes.filter_map(|attribute| attribute.split_once("="))
-                {
-                    if attribute == "profile-level-id" {
-                        if value.starts_with("64") {
-                            format = VideoFormat::H264;
-                        } else if value.starts_with("f4") {
-                            format = VideoFormat::H264High8_444;
-                        } else {
-                            debug!(profile_level_id = ?value, "found unknown h264 profile-level-id");
-                        }
+                let mut format = VideoFormat::H264;
+                if let Some(value) = profile_level_id {
+                    if value.starts_with("64") {
+                        format = VideoFormat::H264;
+                    } else if value.starts_with("f4") {
+                        format = VideoFormat::H264High8_444;
+                    } else {
+                        debug!(profile_level_id = ?value, "found unknown h264 profile-level-id");
                     }
                 }
 
@@ -457,6 +471,60 @@ fn get_video_formats(sdp: &Session) -> HashMap<VideoFormat, RTCRtpCodecParameter
 
     formats
 }
+/// Patches an SDP answer so `payload_type` on the video media advertises the
+/// High profile the host actually emits. `VideoFormat::H264` is High profile,
+/// but clients only offer baseline/main fmtp lines and the answer copies the
+/// offer's fmtp verbatim — without this a strict hardware decoder (e.g.
+/// ChromeOS) configures itself for baseline and wedges on the real High
+/// profile bitstream.
+pub fn patch_answer_h264_profile(answer_sdp: &mut Session, payload_type: u8) {
+    let prefix = format!("{payload_type} ");
+
+    for media in &mut answer_sdp.medias {
+        if media.media != "video" {
+            continue;
+        }
+
+        for attribute in &mut media.attributes {
+            if attribute.attribute != "fmtp" {
+                continue;
+            }
+            let Some(value) = &mut attribute.value else {
+                continue;
+            };
+            if !value.starts_with(&prefix) {
+                continue;
+            }
+
+            *value = format!(
+                "{prefix}{}",
+                rewrite_h264_profile_level_id(&value[prefix.len()..], "640034")
+            );
+        }
+    }
+}
+
+/// Rewrites the `profile-level-id` value inside an H264 fmtp line, appending
+/// it when absent.
+fn rewrite_h264_profile_level_id(sdp_fmtp_line: &str, profile_level_id: &str) -> String {
+    let mut replaced = false;
+
+    let mut parts: Vec<String> = Vec::new();
+    for attribute in sdp_fmtp_line.split(";") {
+        if attribute.trim().starts_with("profile-level-id=") {
+            parts.push(format!("profile-level-id={profile_level_id}"));
+            replaced = true;
+        } else {
+            parts.push(attribute.to_string());
+        }
+    }
+    if !replaced {
+        parts.push(format!("profile-level-id={profile_level_id}"));
+    }
+
+    parts.join(";")
+}
+
 fn parse_rtpmap(attribute_value: &str) -> Option<(u8, &str, u32)> {
     let (pt_str, full_codec) = attribute_value.split_once(' ')?;
     let pt = pt_str.parse::<u8>().ok()?;

@@ -513,6 +513,10 @@ pub async fn webrtc_post(
 
     info!("configured server webrtc peer, waiting for ice gathering to complete");
 
+    // The selected video payload type, captured before the channel moves into
+    // the webrtc loop, used to correct the H264 fmtp in the answer below.
+    let video_answer_payload_type = video_channel.h264_answer_payload_type();
+
     // Complete negotiation
     let answer = peer.create_answer(None).await?;
 
@@ -575,6 +579,11 @@ pub async fn webrtc_post(
     // Append additional data to the response
     let mut answer_sdp =
         Session::parse(answer.sdp.as_bytes()).expect("failed to get parse sdp answer");
+
+    if let Some(payload_type) = video_answer_payload_type {
+        video::patch_answer_h264_profile(&mut answer_sdp, payload_type);
+    }
+
     let additional_answer = WebRTCSessionAnswer {
         app_name: app_title,
         microphone: false,
