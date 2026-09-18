@@ -264,7 +264,7 @@ export class WebTransportTransport implements Transport {
         const out: Record<string, StatValue> = {}
         if (this.connectData) {
             out.codec = this.connectData.videoSetup.codec
-            out.resolution = `Width: ${this.connectData.videoSetup.width}, Height: ${this.connectData.videoSetup.height}, Fps: ${this.connectData.videoSetup.fps}`
+            out.resolution = `${this.connectData.videoSetup.width}x${this.connectData.videoSetup.height} @ ${this.connectData.videoSetup.fps} fps`
         }
         if (this.relayStats) {
             out.hostToRelayRttMs = this.relayStats.rttMs
