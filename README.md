@@ -3,10 +3,8 @@
 A simplified fork of [moonlight-web-stream](https://github.com/MrCreativ3001/moonlight-web-stream): an unofficial [Moonlight Client](https://moonlight-stream.org/) allowing you to stream your pc to the Web.
 It hosts a Web Server which will forward [Sunshine](https://docs.lizardbyte.dev/projects/sunshine/latest/) traffic to a Browser using the [WebRTC Api](https://webrtc.org/).
 
-This fork focuses on one thing: desktop streaming.
-- **No built-in user system.** There are no accounts, logins, roles or admin panel. Everyone who can reach the web server sees the same hosts and can stream.
-- **You provide authentication.** Put the server behind a reverse proxy that handles auth (basic auth, Authelia, Authentik, Cloudflare Access, a VPN, ...). See [Authentication](#authentication).
-- **Stream settings are per browser** (stored in `localStorage`), not per user.
+This fork is intended for those who want a lighter version of their version, while also adding minor improvements to make it slightly-closer-to-moonlight.
+<sub>(And WebTransport support, but that's still the works!)</sub>
 
 > **Warning**
 > Never expose the web server directly to the internet without an authenticating reverse proxy in front of it. Anyone reaching it can add, pair and stream your PCs.
