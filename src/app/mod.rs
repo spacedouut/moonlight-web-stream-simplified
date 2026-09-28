@@ -9,11 +9,16 @@ use std::{
 use actix_web::{HttpResponse, ResponseError, body::BoxBody, http::StatusCode};
 use hex::FromHexError;
 use moonlight_common::{
+    MoonlightError,
     crypto::rustcrypto::{RustCryptoBackend, RustCryptoError},
     high::{MoonlightClientError, StreamConfigError},
     http::{
-        ClientInfo,
-        client::{RequestError, async_client::RequestClient as _, tokio_hyper::TokioHyperClient},
+        ClientInfo, ParseError,
+        client::{
+            RequestError,
+            async_client::RequestClient as _,
+            tokio_hyper::{HyperError, TokioHyperClient},
+        },
         pair::PairingCryptoBackend,
         server_info::{ServerInfoEndpoint, ServerInfoRequest},
     },
@@ -70,22 +75,240 @@ pub enum AppError {
     WebRTC(#[from] webrtc::error::Error),
 }
 
+/// How the relay reports an error to the web client.
+///
+/// The goal is that a user never has to open the server logs to understand
+/// why something failed: every error is classified into a stable `code` and
+/// an actionable `message`.
+pub struct ErrorDescription {
+    pub status: StatusCode,
+    pub code: &'static str,
+    pub message: String,
+}
+
+fn describe_client_error(err: &MoonlightClientError) -> ErrorDescription {
+    let not_paired = || {
+        ErrorDescription {
+        status: StatusCode::FORBIDDEN,
+        code: "not_paired",
+        message: "This device isn't paired with the host. Pair it first; if it was paired before, the host may have forgotten it so pair again.".into(),
+    }
+    };
+    let host_unreachable = || ErrorDescription {
+        status: StatusCode::BAD_GATEWAY,
+        code: "host_unreachable",
+        message: "Couldn't reach Sunshine. Make sure the host is on and Sunshine is running."
+            .into(),
+    };
+
+    match err {
+        MoonlightClientError::Offline => host_unreachable(),
+        MoonlightClientError::NotPaired | MoonlightClientError::Unauthenticated => not_paired(),
+        MoonlightClientError::Moonlight(inner) => match inner {
+            MoonlightError::NotPaired => not_paired(),
+            MoonlightError::ConnectionAlreadyExists => ErrorDescription {
+                status: StatusCode::CONFLICT,
+                code: "host_busy",
+                message: "The host is busy streaming to another client. Stop that stream and try again.".into(),
+            },
+            MoonlightError::ConnectionFailed | MoonlightError::InstanceAquire => ErrorDescription {
+                status: StatusCode::BAD_GATEWAY,
+                code: "host_stream_refused",
+                message: "The host refused the stream connection. Check that the Moonlight ports aren't blocked by a firewall or VPN.".into(),
+            },
+            other => ErrorDescription {
+                status: StatusCode::BAD_GATEWAY,
+                code: "host_error",
+                message: format!("The host reported an error: {other}"),
+            },
+        },
+        MoonlightClientError::StreamConfig(config_err) => ErrorDescription {
+            status: StatusCode::BAD_REQUEST,
+            code: "unsupported_stream_config",
+            message: format!("The host doesn't support this stream configuration: {config_err}"),
+        },
+        MoonlightClientError::Backend(backend) => {
+            let Some(hyper_err) = backend.downcast_ref::<HyperError>() else {
+                return ErrorDescription {
+                    status: StatusCode::BAD_GATEWAY,
+                    code: "host_request_failed",
+                    message: format!("Couldn't talk to the host: {backend}"),
+                };
+            };
+            match hyper_err {
+                // The host answered but reported a failure, e.g.
+                // "Failed to initialize video capture/encoding. Is a display connected and turned on?"
+                HyperError::Parse(ParseError::InvalidXmlStatusCode { message }) => {
+                    ErrorDescription {
+                        status: StatusCode::BAD_GATEWAY,
+                        code: "host_error",
+                        message: sunshine_error_hint(message.as_deref()),
+                    }
+                }
+                _ if hyper_err.is_encryption() => ErrorDescription {
+                    status: StatusCode::FORBIDDEN,
+                    code: "pairing_invalid",
+                    message: "The host rejected this device's certificate: it was probably unpaired. Re-pair and try again.".into(),
+                },
+                _ if hyper_err.is_connect() => host_unreachable(),
+                _ => ErrorDescription {
+                    status: StatusCode::BAD_GATEWAY,
+                    code: "host_request_failed",
+                    message: format!("Couldn't talk to the host: {hyper_err}"),
+                },
+            }
+        }
+        MoonlightClientError::Pairing(err) => ErrorDescription {
+            status: StatusCode::FORBIDDEN,
+            code: "pairing_failed",
+            message: format!("Pairing with the host failed: {err}. Check the PIN shown on the host."),
+        },
+        MoonlightClientError::Poisoned(_) => ErrorDescription {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "internal",
+            message: "Relay error: the host client is in a broken state, restart the relay.".into(),
+        },
+    }
+}
+
+/// Turns the raw `status_message` a Sunshine like host sent back into an
+/// actionable message. Unknown messages are passed through verbatim.
+fn sunshine_error_hint(message: Option<&str>) -> String {
+    let Some(message) = message else {
+        return "Sunshine rejected the request.".into();
+    };
+    let lower = message.to_lowercase();
+    if lower.contains("video capture") || lower.contains("encoding") || lower.contains("display") {
+        "Sunshine failed to start encoding. Make sure the host's display is connected and on."
+            .into()
+    } else if lower.contains("authorized") || lower.contains("certificate") {
+        "The host rejected this device's certificate: it may have been unpaired. Re-pair and try again.".into()
+    } else {
+        format!("Sunshine reported an error: {message}")
+    }
+}
+
+fn describe_stream_error(err: &MoonlightStreamError) -> ErrorDescription {
+    match err {
+        MoonlightStreamError::Io(io_err) => match io_err.kind() {
+            io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::TimedOut
+            | io::ErrorKind::AddrNotAvailable
+            | io::ErrorKind::NotConnected => ErrorDescription {
+                status: StatusCode::BAD_GATEWAY,
+                code: "stream_unreachable",
+                message: "The host accepted the stream but the streaming ports are unreachable. Check that the Moonlight ports (TCP 47984, 47989, 48010 and UDP 47998-48010) aren't blocked by a firewall or VPN.".into(),
+            },
+            _ => ErrorDescription {
+                status: StatusCode::BAD_GATEWAY,
+                code: "stream_failed",
+                message: format!("The connection to the host's stream failed: {io_err}"),
+            },
+        },
+        MoonlightStreamError::ConnectionTimeout => ErrorDescription {
+            status: StatusCode::BAD_GATEWAY,
+            code: "stream_timeout",
+            message: "Timed out connecting to the host's stream. The host is reachable but the streaming ports look blocked: check firewall and NAT forwarding for the Moonlight ports (UDP 47998-48010).".into(),
+        },
+        MoonlightStreamError::Setup(setup_err) => ErrorDescription {
+            status: StatusCode::BAD_GATEWAY,
+            code: "stream_setup_failed",
+            message: format!("The host accepted the stream but the stream setup failed: {setup_err}"),
+        },
+        MoonlightStreamError::Closed => ErrorDescription {
+            status: StatusCode::GONE,
+            code: "stream_closed",
+            message: "The stream is already closed.".into(),
+        },
+        other => ErrorDescription {
+            status: StatusCode::BAD_GATEWAY,
+            code: "stream_failed",
+            message: format!("The connection to the host's stream failed: {other}"),
+        },
+    }
+}
+
+impl AppError {
+    /// Classified, user facing description of this error.
+    pub fn describe(&self) -> ErrorDescription {
+        match self {
+            Self::AppDestroyed => ErrorDescription {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                code: "internal",
+                message: "The relay is restarting. Try again in a moment.".into(),
+            },
+            Self::HostNotFound => ErrorDescription {
+                status: StatusCode::NOT_FOUND,
+                code: "host_not_found",
+                message: "The relay doesn't know this host.".into(),
+            },
+            Self::HostPaired => ErrorDescription {
+                status: StatusCode::CONFLICT,
+                code: "host_paired",
+                message: "This host is already paired.".into(),
+            },
+            Self::HostNotPaired => ErrorDescription {
+                status: StatusCode::FORBIDDEN,
+                code: "not_paired",
+                message: "This device isn't paired with the host. Pair it first.".into(),
+            },
+            Self::WebRtcClientCodecNotSupported => ErrorDescription {
+                status: StatusCode::BAD_REQUEST,
+                code: "codec_unsupported",
+                message: "This browser doesn't support any video codec the host can use. Try selecting H264 in the settings.".into(),
+            },
+            Self::StreamClosed => ErrorDescription {
+                status: StatusCode::NOT_FOUND,
+                code: "stream_closed",
+                message: "The stream is already closed.".into(),
+            },
+            Self::WebTransportDisabled => ErrorDescription {
+                status: StatusCode::NOT_FOUND,
+                code: "transport_disabled",
+                message: "The relay isn't exposing WebTransport. It may be disabled in the relay config.".into(),
+            },
+            Self::StreamConfig(config_err) => ErrorDescription {
+                status: StatusCode::BAD_REQUEST,
+                code: "unsupported_stream_config",
+                message: format!("The host doesn't support this stream configuration: {config_err}"),
+            },
+            Self::WebRTCParse(parse_err) => ErrorDescription {
+                status: StatusCode::BAD_REQUEST,
+                code: "bad_request",
+                message: format!("The relay couldn't parse the WebRTC offer: {parse_err}"),
+            },
+            Self::Moonlight(err) => describe_client_error(err),
+            Self::MoonlightStream(err) => describe_stream_error(err),
+            Self::WebRTC(err) => ErrorDescription {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                code: "webrtc_relay_error",
+                message: format!("The relay hit a WebRTC error: {err}"),
+            },
+            _ => ErrorDescription {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                code: "internal",
+                message: format!("Relay error: {self}"),
+            },
+        }
+    }
+
+    /// The body the relay sends to clients for this error.
+    pub fn api_error_body(&self) -> crate::api::bindings::ApiErrorBody {
+        let description = self.describe();
+        crate::api::bindings::ApiErrorBody {
+            code: description.code.into(),
+            message: description.message,
+        }
+    }
+}
+
 impl ResponseError for AppError {
     fn status_code(&self) -> StatusCode {
-        self.error_response().status()
+        self.describe().status
     }
 
     fn error_response(&self) -> HttpResponse<BoxBody> {
-        match self {
-            Self::HostNotFound => HttpResponse::NotFound().body("host not found"),
-            Self::HostNotPaired => HttpResponse::Forbidden().finish(),
-            Self::HostPaired => HttpResponse::NotModified().body("host already paired"),
-            Self::StreamClosed => HttpResponse::NotFound().body("stream not found"),
-            Self::WebTransportDisabled => HttpResponse::NotFound().finish(),
-            Self::WebRtcClientCodecNotSupported => HttpResponse::BadRequest().finish(),
-            Self::WebRTCParse(_) => HttpResponse::BadRequest().finish(),
-            _ => HttpResponse::InternalServerError().finish(),
-        }
+        HttpResponse::build(self.status_code()).json(self.api_error_body())
     }
 }
 

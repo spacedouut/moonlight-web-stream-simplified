@@ -114,7 +114,7 @@ async fn pair_host(
         };
         let message = result
             .map(PostPairResponse2::Paired)
-            .unwrap_or(PostPairResponse2::PairError);
+            .unwrap_or_else(|err| PostPairResponse2::PairError(err.describe().message));
         let _ = sender.send(message).await;
     });
     Ok(response)

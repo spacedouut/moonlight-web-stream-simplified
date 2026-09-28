@@ -188,7 +188,24 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
     let WebSocketServerboundMessage::Request(request) = request else {
         return Err(AppError::StreamClosed);
     };
-    let (stream, response) = start_moonlight_stream(&app, &request).await?;
+    let (stream, response) = match start_moonlight_stream(&app, &request).await {
+        Ok(value) => value,
+        Err(err) => {
+            // Tell the client why the stream couldn't be started before
+            // closing: a silent close would leave it with no reason at all.
+            if let Ok(json) =
+                serde_json::to_vec(&WebSocketClientboundMessage::Error(err.api_error_body()))
+            {
+                let mut frame = Vec::with_capacity(5 + json.len());
+                frame.extend_from_slice(&((json.len() + 1) as u32).to_be_bytes());
+                frame.push(0);
+                frame.extend_from_slice(&json);
+                let _ = message_send.write_all(&frame).await;
+                let _ = message_send.finish().await;
+            }
+            return Err(err);
+        }
+    };
 
     let (sender, mut sender_rx) = mpsc::channel::<Outgoing>(512);
     let sender_connection = connection.clone();

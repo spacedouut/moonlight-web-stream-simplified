@@ -162,7 +162,8 @@ pub enum PostPairResponse1 {
 #[derive(Serialize, Deserialize, Debug, TS)]
 #[ts(export, export_to = EXPORT_PATH)]
 pub enum PostPairResponse2 {
-    PairError,
+    /// Pairing failed: the string is a user facing reason.
+    PairError(String),
     Paired(DetailedHost),
 }
 
@@ -272,11 +273,26 @@ pub struct WebSocketStreamRequest {
     pub preferred_codecs: u32,
 }
 
+/// Error body sent by the relay to the web client.
+///
+/// Every non-2xx api response carries this body so the client can show an
+/// actionable message instead of a bare status code.
+#[derive(Serialize, Deserialize, Debug, TS)]
+#[ts(export, export_to = EXPORT_PATH)]
+pub struct ApiErrorBody {
+    /// Stable machine readable identifier, e.g. `host_unreachable`.
+    pub code: String,
+    /// Human readable, actionable message safe to show in the UI.
+    pub message: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, TS)]
 #[ts(export, export_to = EXPORT_PATH)]
 pub enum WebSocketClientboundMessage {
     Response(WebSocketStreamResponse),
     Stats(StreamStatsClientboundMessage),
+    /// The stream couldn't be started: the socket is closed right after this.
+    Error(ApiErrorBody),
 }
 #[derive(Serialize, Deserialize, Debug, TS)]
 #[ts(export, export_to = EXPORT_PATH)]

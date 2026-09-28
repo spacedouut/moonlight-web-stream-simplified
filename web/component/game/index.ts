@@ -1,5 +1,5 @@
 import { Component, ComponentEvent } from "../index"
-import { Api, apiGetAppImage, apiHostCancel } from "../../api"
+import { Api, apiGetAppImage, apiHostCancel, describeError } from "../../api"
 import { App } from "../../api_bindings"
 import { getCurrentLanguage, getTranslations } from "../../i18n"
 import { setContextMenu } from "../context_menu"
@@ -112,9 +112,13 @@ export class Game implements Component {
             elements.push({
                 name: i.stopCurrentSession,
                 callback: async () => {
-                    const response = await apiHostCancel(this.api, { host_id: this.hostId })
-                    if (!response.success) {
-                        await showMessage(i.failedToCloseApp)
+                    try {
+                        const response = await apiHostCancel(this.api, { host_id: this.hostId })
+                        if (!response.success) {
+                            await showMessage(i.failedToCloseApp)
+                        }
+                    } catch (error) {
+                        await showMessage(`Couldn't stop the session: ${describeError(error)}`)
                     }
 
                     const event = new ComponentEvent("ml-gamereload", this)

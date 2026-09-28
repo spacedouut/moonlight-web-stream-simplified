@@ -1,5 +1,5 @@
 import { DetailedHost, UndetailedHost } from "../../api_bindings"
-import { Api, apiDeleteHost, apiGetHost, isDetailedHost, apiPostPair, apiWakeUp, apiPatchHost } from "../../api"
+import { Api, apiDeleteHost, apiGetHost, isDetailedHost, apiPostPair, apiWakeUp, apiPatchHost, describeError } from "../../api"
 import { Component, ComponentEvent } from "../index"
 import { getCurrentLanguage, getTranslations } from "../../i18n"
 import { setContextMenu } from "../context_menu"
@@ -62,11 +62,15 @@ export class Host implements Component {
     }
 
     async forceFetch() {
-        const newCache = await apiGetHost(this.api, {
-            host_id: this.hostId,
-        })
+        try {
+            const newCache = await apiGetHost(this.api, {
+                host_id: this.hostId,
+            })
 
-        this.updateCache(newCache, true)
+            this.updateCache(newCache, true)
+        } catch (error) {
+            showNotification(`Couldn't refresh the host: ${describeError(error)}`)
+        }
     }
     async getCurrentGame(): Promise<number | null> {
         await this.forceFetch()
@@ -163,17 +167,27 @@ export class Host implements Component {
     }
 
     private async remove() {
-        await apiDeleteHost(this.api, {
-            host_id: this.getHostId()
-        })
+        try {
+            await apiDeleteHost(this.api, {
+                host_id: this.getHostId()
+            })
+        } catch (error) {
+            await showMessage(`Couldn't remove the host: ${describeError(error)}`)
+            return
+        }
 
         this.divElement.dispatchEvent(new ComponentEvent("ml-hostremove", this))
     }
     private async wakeUp() {
         const i = getTranslations(getCurrentLanguage()).host
-        await apiWakeUp(this.api, {
-            host_id: this.getHostId()
-        })
+        try {
+            await apiWakeUp(this.api, {
+                host_id: this.getHostId()
+            })
+        } catch (error) {
+            await showMessage(`Couldn't send the wake-up packet: ${describeError(error)}`)
+            return
+        }
 
         await showMessage(i.wakeUpSent)
     }
@@ -188,27 +202,38 @@ export class Host implements Component {
             }
         }
 
-        const responseStream = await apiPostPair(this.api, {
-            host_id: this.getHostId()
-        })
+        try {
+            const responseStream = await apiPostPair(this.api, {
+                host_id: this.getHostId()
+            })
 
-        if (typeof responseStream.response == "string") {
-            throw `failed to pair (stage 1): ${responseStream.response}`
+            if (typeof responseStream.response == "string") {
+                // stage 1 refused, e.g. InternalServerError or PairError
+                await showMessage(`Couldn't start pairing: ${describeError(responseStream.response)}`)
+                return
+            }
+
+            const messageAbort = new AbortController()
+            showMessage(i.pairPrompt(this.getCache()?.name ?? "", responseStream.response.Pin), { signal: messageAbort.signal })
+
+            const resultResponse = await responseStream.next()
+            messageAbort.abort()
+
+            if (!resultResponse) {
+                await showMessage("Pairing failed: the relay ended the exchange without a result.")
+                return
+            } else if ("PairError" in resultResponse) {
+                await showMessage(`Couldn't pair with the host: ${resultResponse.PairError}`)
+                return
+            } else if (typeof resultResponse == "string") {
+                await showMessage(`Couldn't pair with the host: ${describeError(resultResponse)}`)
+                return
+            }
+
+            this.updateCache(resultResponse.Paired, true)
+        } catch (error) {
+            await showMessage(`Couldn't pair with the host: ${describeError(error)}`)
         }
-
-        const messageAbort = new AbortController()
-        showMessage(i.pairPrompt(this.getCache()?.name ?? "", responseStream.response.Pin), { signal: messageAbort.signal })
-
-        const resultResponse = await responseStream.next()
-        messageAbort.abort()
-
-        if (!resultResponse) {
-            throw "missing stage 2 of pairing"
-        } else if (typeof resultResponse == "string") {
-            throw `failed to pair (stage 2): ${resultResponse}`
-        }
-
-        this.updateCache(resultResponse.Paired, true)
     }
 
     getHostId(): number {

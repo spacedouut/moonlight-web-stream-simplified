@@ -1,4 +1,4 @@
-import { App, DeleteHostQuery, DetailedHost, GetAppImageQuery, GetAppsQuery, GetAppsResponse, GetHostQuery, GetHostResponse, GetHostsResponse, PostCancelRequest, PostCancelResponse, PostPairRequest, PostPairResponse1, PostPairResponse2, PostWakeUpRequest, PostHostRequest, PostHostResponse, UndetailedHost, PatchHostRequest, WebTransportConfigResponse, } from "./api_bindings"
+import { ApiErrorBody, App, DeleteHostQuery, DetailedHost, GetAppImageQuery, GetAppsQuery, GetAppsResponse, GetHostQuery, GetHostResponse, GetHostsResponse, PostCancelRequest, PostCancelResponse, PostPairRequest, PostPairResponse1, PostPairResponse2, PostWakeUpRequest, PostHostRequest, PostHostResponse, UndetailedHost, PatchHostRequest, WebTransportConfigResponse, } from "./api_bindings"
 import { buildUrl } from "./config_"
 import { WebRtcLinkHeader_Tags, webrtcLinkHeaderParse } from "./uniffi/moonlight_common_bindings"
 
@@ -85,21 +85,59 @@ function buildRequest(api: Api, endpoint: string, method: string, init?: ApiFetc
     return [url, request]
 }
 
+/// Reads the `ApiErrorBody` the relay sends on non-2xx responses.
+/// Falls back to the raw text when the body isn't the expected json.
+export async function readApiErrorBody(response: Response): Promise<ApiErrorBody | null> {
+    try {
+        const text = await response.text()
+        if (!text) {
+            return null
+        }
+        try {
+            const json = JSON.parse(text)
+            if (json && typeof json.message == "string") {
+                return {
+                    code: typeof json.code == "string" ? json.code : "unknown",
+                    message: json.message
+                }
+            }
+        } catch {
+            // not json: fall through to raw text
+        }
+        return { code: "unknown", message: text }
+    } catch {
+        return null
+    }
+}
+
+/// The best user facing description of something that went wrong.
+export function describeError(error: unknown): string {
+    if (error instanceof FetchError) {
+        return error.describe()
+    }
+    if (error instanceof Error) {
+        return error.message
+    }
+    return `${error}`
+}
+
 export class FetchError extends Error {
     private response?: Response
+    private apiError?: ApiErrorBody | null
 
     constructor(type: "timeout", endpoint: string, method: string)
-    constructor(type: "failed", endpoint: string, method: string, response: Response, reason?: string)
+    constructor(type: "failed", endpoint: string, method: string, response: Response, apiError?: ApiErrorBody | null)
     constructor(type: "unknown", endpoint: string, method: string, error: Error)
 
-    constructor(type: "timeout" | "failed" | "unknown", endpoint: string, method: string, responseOrError?: Response | any, reason?: string) {
+    constructor(type: "timeout" | "failed" | "unknown", endpoint: string, method: string, responseOrError?: Response | any, apiError?: ApiErrorBody | null) {
         if (type == "timeout") {
             super(`failed to fetch ${method} at ${endpoint} because of timeout`)
         } else if (type == "failed") {
             const response = responseOrError as Response
-            super(`failed to fetch ${method} at ${endpoint} with code ${response?.status} ${reason ? `because of ${reason}` : ""}`)
+            super(`failed to fetch ${method} at ${endpoint} with code ${response?.status} ${apiError ? `because of ${apiError.message}` : ""}`)
 
             this.response = response
+            this.apiError = apiError
         } else if (type == "unknown") {
             const error = responseOrError as Error
             super(`failed to fetch ${method} at ${endpoint} because of ${error}`)
@@ -108,6 +146,19 @@ export class FetchError extends Error {
 
     getResponse(): Response | null {
         return this.response ?? null
+    }
+
+    /// The error body the relay sent, when the failure came from the relay itself.
+    getApiError(): ApiErrorBody | null {
+        return this.apiError ?? null
+    }
+
+    /// The best user facing description of this failure.
+    describe(): string {
+        if (this.apiError) {
+            return this.apiError.message
+        }
+        return this.message
     }
 }
 
@@ -165,7 +216,7 @@ export async function fetchApi(api: Api, endpoint: string, method: string = GET,
     }
 
     if (!response.ok) {
-        throw new FetchError("failed", endpoint, method, response)
+        throw new FetchError("failed", endpoint, method, response, await readApiErrorBody(response))
     }
 
     if (init?.response == "ignore") {
@@ -269,6 +320,10 @@ export async function apiWebRTCConfiguration(api: Api): Promise<WebRTCConfigurat
         throw new FetchError("unknown", ENDPOINT, OPTIONS, e)
     }
 
+    if (!response.ok) {
+        throw new FetchError("failed", ENDPOINT, OPTIONS, response, await readApiErrorBody(response))
+    }
+
     const iceServers: Array<RTCIceServer> = []
 
     const rawLinks = response.headers.get("Link")
@@ -314,8 +369,7 @@ export async function apiWebRTCOffer(api: Api, offerSdp: string): Promise<WebRTC
 
     // 201 == Created
     if (response.status != 201) {
-        const reason = await response.text()
-        throw new FetchError("failed", ENDPOINT, POST, response, reason)
+        throw new FetchError("failed", ENDPOINT, POST, response, await readApiErrorBody(response))
     }
 
     // Get sdp

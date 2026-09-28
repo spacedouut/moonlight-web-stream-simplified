@@ -100,7 +100,23 @@ async fn handle_ws(
         }
     };
 
-    let (stream, stream_response) = start_moonlight_stream(&app, &stream_request).await?;
+    let (stream, stream_response) = match start_moonlight_stream(&app, &stream_request).await {
+        Ok(value) => value,
+        Err(err) => {
+            // Tell the client why the stream couldn't be started before
+            // closing: a silent close would leave it with no reason at all.
+            let body = WebSocketClientboundMessage::Error(err.api_error_body());
+            if let Ok(text) = serde_json::to_string(&body) {
+                let _ = ws_sender.text(text).await;
+            }
+            let reason = actix_ws::CloseReason {
+                code: actix_ws::CloseCode::Error,
+                description: Some(err.describe().code.to_string()),
+            };
+            let _ = ws_sender.close(Some(reason)).await;
+            return Err(err);
+        }
+    };
     let response = WebSocketClientboundMessage::Response(stream_response);
     info!(response = ?response, "sending response to client");
 

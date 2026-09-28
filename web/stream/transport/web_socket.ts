@@ -1,5 +1,5 @@
 import { Api } from "../../api"
-import { WebSocketChannel, WebSocketClientboundMessage, WebSocketServerboundMessage } from "../../api_bindings"
+import { ApiErrorBody, WebSocketChannel, WebSocketClientboundMessage, WebSocketServerboundMessage } from "../../api_bindings"
 import { ClientInputEvent, ControlPacket, ControlPacketConfig, controlPacketDeserialize, controlPacketSerialize, InputBatcher, PacketDirection } from "../../uniffi/moonlight_common_bindings"
 import { globalObject } from "../../util"
 import { AudioPlayer, TrackAudioPlayer } from "../audio/index"
@@ -29,6 +29,12 @@ export class WebSocketTransport implements Transport {
 
     private connectData: TransportConnectData | null = null
 
+    /// Why the relay refused the stream, if it told us.
+    serverError: ApiErrorBody | null = null
+    get failureReason(): string | null {
+        return this.serverError?.message ?? null
+    }
+
     constructor(api: Api, logger?: Logger) {
         this.logger = logger
 
@@ -54,7 +60,9 @@ export class WebSocketTransport implements Transport {
 
     // -- Web Socket Events
     private onError() {
-        // TODO: log the error
+        if (!this.wasConnected) {
+            this.logger?.debug("Couldn't reach the relay over a WebSocket. Is the relay running and reachable?")
+        }
         this.close()
     }
 
@@ -99,6 +107,9 @@ export class WebSocketTransport implements Transport {
                 if (this.onconnect) {
                     this.onconnect(this.connectData)
                 }
+            } else if ("Error" in message) {
+                this.serverError = message.Error
+                this.logger?.debug(message.Error.message, { type: "fatalDescription" })
             } else if ("Stats" in message) {
                 if ("Pong" in message.Stats) {
                     const pongId = message.Stats.Pong
@@ -156,7 +167,10 @@ export class WebSocketTransport implements Transport {
         })
     }
 
-    private onClose() {
+    private onClose(event: CloseEvent) {
+        if (!this.wasConnected && !this.serverError && event.reason) {
+            this.logger?.debug(`The relay closed the WebSocket: ${event.reason}`)
+        }
         this.close()
     }
 

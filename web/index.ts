@@ -1,5 +1,5 @@
 import "./polyfill/index"
-import { Api, getApi, apiPostHost, FetchError, apiGetHost } from "./api"
+import { Api, getApi, apiPostHost, FetchError, apiGetHost, describeError } from "./api"
 import { AddHostModal } from "./component/host/add_modal"
 import { HostList } from "./component/host/list"
 import { Component, ComponentEvent } from "./component/index"
@@ -173,8 +173,14 @@ class MainApp implements Component {
                         showNotification(I.index.addHostUnreachable(host.address))
                         return
                     }
+                    const apiError = e.getApiError()
+                    if (apiError) {
+                        showNotification(apiError.message)
+                        return
+                    }
                 }
-                throw e
+                showNotification(`Couldn't add the host: ${describeError(e)}`)
+                return
             }
 
             this.hostList.insertList(newHost.host_id, newHost)
@@ -304,10 +310,14 @@ class MainApp implements Component {
     }
 
     async forceFetch() {
-        await Promise.all([
-            this.hostList.forceFetch(),
-            this.gameList?.forceFetch()
-        ])
+        try {
+            await Promise.all([
+                this.hostList.forceFetch(),
+                this.gameList?.forceFetch()
+            ])
+        } catch (error) {
+            showNotification(`Couldn't reach the relay: ${describeError(error)}`)
+        }
 
         if (this.currentDisplay == "games"
             && this.gameList
@@ -328,13 +338,17 @@ class MainApp implements Component {
         const host = this.hostList.getHost(hostId)
 
         let currentGame = null
-        if (host != null) {
-            currentGame = await host.getCurrentGame()
-        } else {
-            const host = await apiGetHost(this.api, { host_id: hostId })
-            if (host.current_game != 0) {
-                currentGame = host.current_game
+        try {
+            if (host != null) {
+                currentGame = await host.getCurrentGame()
+            } else {
+                const host = await apiGetHost(this.api, { host_id: hostId })
+                if (host.current_game != 0) {
+                    currentGame = host.current_game
+                }
             }
+        } catch {
+            // state refresh is best effort; the host list already shows the error
         }
 
         if (currentGame != null) {

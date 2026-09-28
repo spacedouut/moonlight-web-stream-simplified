@@ -963,7 +963,8 @@ class ConnectionInfoModal implements Modal<void> {
             if (message) {
                 this.debugLog(message)
 
-                if (!this.textTy) {
+                // fatal lines replace the headline; description lines append to it
+                if (!this.textTy || data.additional?.type == "fatal") {
                     this.text.innerText = message
                     this.textTy = data.additional?.type ?? null
                 } else if (data.additional?.type == "fatalDescription" || data.additional?.type == "ifErrorDescription") {
