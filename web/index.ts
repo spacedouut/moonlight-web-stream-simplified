@@ -348,7 +348,9 @@ class MainApp implements Component {
                 }
             }
         } catch {
-            // state refresh is best effort; the host list already shows the error
+            // state refresh is best effort; don't clear the active game on a
+            // transient failure
+            return
         }
 
         if (currentGame != null) {
