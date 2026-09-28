@@ -220,6 +220,9 @@ export class WebTransportTransport implements Transport {
             }
             this.internalOnConnect()
             this.onconnect?.(this.connectData)
+        } else if ("Error" in message) {
+            this.serverError = message.Error
+            this.logger?.debug(message.Error.message, { type: "fatalDescription" })
         } else if ("Stats" in message) {
             if ("Pong" in message.Stats) this.onPongReceive(message.Stats.Pong)
             else if ("RelayRtt" in message.Stats) this.relayStats = { rttMs: message.Stats.RelayRtt.rtt_ms, rttVarianceMs: message.Stats.RelayRtt.rtt_variance_ms }
