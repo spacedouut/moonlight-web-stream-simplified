@@ -1,7 +1,8 @@
-import { Api, apiGetApps } from "../../api"
+import { Api, apiGetApps, describeError } from "../../api"
 import { App } from "../../api_bindings"
 import { FetchListComponent } from "../fetch_list"
 import { ComponentEvent } from "../index"
+import { showNotification } from "../notification"
 import { Game, GameCache, GameEventListener } from "./index"
 
 export class GameList extends FetchListComponent<App, Game> {
@@ -37,11 +38,15 @@ export class GameList extends FetchListComponent<App, Game> {
     }
 
     async forceFetch() {
-        const apps = await apiGetApps(this.api, {
-            host_id: this.hostId,
-        })
+        try {
+            const apps = await apiGetApps(this.api, {
+                host_id: this.hostId,
+            })
 
-        this.updateCache(apps)
+            this.updateCache(apps)
+        } catch (error) {
+            showNotification(`Couldn't load the app list: ${describeError(error)}`)
+        }
     }
     private createCache(data: App): GameCache {
         const cache = data as GameCache

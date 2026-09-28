@@ -1,5 +1,5 @@
 import { Api, apiWebTransportConfig } from "../../api"
-import { WebSocketChannel, WebSocketClientboundMessage, WebSocketServerboundMessage, WebTransportConfigResponse } from "../../api_bindings"
+import { ApiErrorBody, WebSocketChannel, WebSocketClientboundMessage, WebSocketServerboundMessage, WebTransportConfigResponse } from "../../api_bindings"
 import { ClientInputEvent, ControlPacket, ControlPacketConfig, controlPacketDeserialize, controlPacketSerialize, InputBatcher, PacketDirection } from "../../uniffi/moonlight_common_bindings"
 import { globalObject } from "../../util"
 import { AudioPlayer, TrackAudioPlayer } from "../audio/index"
@@ -34,6 +34,13 @@ export class WebTransportTransport implements Transport {
     onconnect: ((connectData: TransportConnectData) => void) | null = null
     onclose: ((shutdown: TransportShutdown) => void) | null = null
 
+    /// Why the stream couldn't be established, if we know.
+    serverError: ApiErrorBody | null = null
+    private connectFailure: string | null = null
+    get failureReason(): string | null {
+        return this.serverError?.message ?? this.connectFailure
+    }
+
     constructor(api: Api, config: WebTransportConfigResponse, logger?: Logger) {
         this.logger = logger
         const apiPath = new URL(api.host_url).pathname
@@ -56,6 +63,7 @@ export class WebTransportTransport implements Transport {
             void this.readUnidirectionalStreams()
             void this.readDatagrams()
         } catch {
+            this.connectFailure = "Couldn't open a WebTransport session to the relay. Check that WebTransport is enabled in the relay config and that UDP/QUIC to the relay's WebTransport port isn't blocked."
             await this.close()
         }
     }

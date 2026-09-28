@@ -1,4 +1,4 @@
-import { Api, apiHostCancel, apiWebRTCConfiguration, apiWebRTCOffer, apiWebTransportConfig } from "../api"
+import { Api, apiHostCancel, apiWebRTCConfiguration, apiWebRTCOffer, apiWebTransportConfig, describeError, FetchError } from "../api"
 import { Component } from "../component/index"
 import { Settings, TransportType } from "../component/settings_menu"
 import { ControlPacket, ControlPacket_Tags, VideoFormats } from "../uniffi/moonlight_common_bindings"
@@ -176,7 +176,8 @@ export class Stream implements Component {
                 return
             }
             if (!wasConnected) {
-                this.debugLog("Tried all configured transport options but no connection was possible", { type: "fatal" })
+                this.debugLog("Failed to connect to the host", { type: "fatal" })
+                this.debugLog(this.failureReason ?? "Tried all configured transport options but none connected. Check that the relay is running and reachable, and that the host is on with Sunshine active.", { type: "fatalDescription" })
                 return
             }
 
@@ -210,6 +211,9 @@ export class Stream implements Component {
     }
 
     private transport: Transport | null = null
+
+    /// The most specific reason we know for why the last connection attempt failed.
+    private failureReason: string | null = null
 
     private setTransport(transport: Transport) {
         if (this.isStopped) {
@@ -266,7 +270,8 @@ export class Stream implements Component {
                 this.createTransportOptions(),
             ])
         } catch (error) {
-            this.debugLog(`failed to prepare WebRTC connection because ${error}`)
+            this.debugLog(`Couldn't prepare the WebRTC connection: ${describeError(error)}`, { type: "ifErrorDescription" })
+            this.failureReason = describeError(error)
             return "failednoconnect"
         }
 
@@ -307,7 +312,8 @@ export class Stream implements Component {
             // Apply answer
             await transport.setAnswer(answer)
         } catch (error) {
-            this.debugLog(`failed to connect using webrtc because ${error}`)
+            this.debugLog(`Couldn't connect over WebRTC: ${describeError(error)}`, { type: "ifErrorDescription" })
+            this.failureReason = describeError(error)
 
             await transport.close()
             return "failednoconnect"
@@ -327,7 +333,8 @@ export class Stream implements Component {
             onTimeout,
         ])
         if (typeof connectData == "string") {
-            this.debugLog(`webrtc connection failed: ${connectData}`)
+            this.failureReason = "The relay accepted the WebRTC offer but the peer connection couldn't be established. This is usually a NAT or firewall problem (check the relay's webrtc config and that UDP is reachable)."
+            this.debugLog(`WebRTC connection failed before it was established (${connectData}). Falling back if another transport is configured.`, { type: "ifErrorDescription" })
             await transport.close()
             // connection failed
             return connectData
@@ -363,7 +370,14 @@ export class Stream implements Component {
         })
 
         // Start stream
-        await transport.startStream(options)
+        try {
+            await transport.startStream(options)
+        } catch (error) {
+            this.failureReason = transport.failureReason ?? "Couldn't reach the relay over a WebSocket. Is the relay running and reachable?"
+            this.debugLog(`Couldn't start the stream over a WebSocket: ${describeError(error)}`, { type: "ifErrorDescription" })
+            await transport.close()
+            return "failednoconnect"
+        }
 
         this.setTransport(transport)
 
@@ -373,6 +387,7 @@ export class Stream implements Component {
         ])
 
         if (typeof connectData == "string") {
+            this.failureReason = transport.failureReason ?? "The relay closed the WebSocket before the stream could start."
             this.debugLog(`web socket connection failed: ${connectData}`)
             await transport.close()
             // connection failed
@@ -392,7 +407,12 @@ export class Stream implements Component {
         try {
             config = await apiWebTransportConfig(this.api)
         } catch (error) {
-            this.debugLog(`failed to get WebTransport configuration because ${error}`)
+            if (error instanceof FetchError && error.getResponse()?.status == 404) {
+                this.failureReason = "The relay isn't exposing or accepting your selected transport (WebTransport). Maybe it's disabled in the relay config?"
+            } else {
+                this.failureReason = describeError(error)
+            }
+            this.debugLog(`Couldn't get the WebTransport configuration from the relay: ${describeError(error)}`, { type: "ifErrorDescription" })
             return "failednoconnect" as const
         }
 
@@ -408,14 +428,16 @@ export class Stream implements Component {
             onConnect = new Promise<TransportConnectData>(resolve => transport.onconnect = resolve)
             onClose = new Promise<TransportShutdown>(resolve => transport.onclose = resolve)
         } catch (error) {
-            this.debugLog(`failed to create WebTransport transport because ${error}`)
+            this.debugLog(`Couldn't create the WebTransport transport: ${describeError(error)}`, { type: "ifErrorDescription" })
+            this.failureReason = describeError(error)
             return "failednoconnect" as const
         }
 
         try {
             await transport.startStream(options)
         } catch (error) {
-            this.debugLog(`failed to connect using WebTransport because ${error}`)
+            this.debugLog(`Couldn't connect over WebTransport: ${describeError(error)}`, { type: "ifErrorDescription" })
+            this.failureReason = transport.failureReason ?? describeError(error)
             await transport.close()
             return "failednoconnect" as const
         }
@@ -423,6 +445,7 @@ export class Stream implements Component {
         this.setTransport(transport)
         const connectData = await Promise.race([onConnect, onClose])
         if (typeof connectData == "string") {
+            this.failureReason = transport.failureReason ?? "The relay's WebTransport session ended before the stream could start."
             await transport.close()
             return connectData
         }
