@@ -79,6 +79,7 @@ export class StreamStats {
     private updateIntervalId: number | null = null
     private updateIntervalMs: number | null = null
     private updatingTransport: Transport | null = null
+    private stopped = false
 
     private history: StreamStatsSample[] = []
     private lastHistoryTime = 0
@@ -123,6 +124,10 @@ export class StreamStats {
     // Stats are always sampled in the background so the debug report has a history,
     // the overlay only raises the sampling rate.
     private checkEnabled() {
+        if (this.stopped) {
+            return
+        }
+
         const intervalMs = this.isEnabled() ? OVERLAY_UPDATE_INTERVAL_MS : BACKGROUND_UPDATE_INTERVAL_MS
         if (this.updateIntervalId != null && this.updateIntervalMs == intervalMs) {
             return
@@ -136,6 +141,7 @@ export class StreamStats {
     }
 
     stop() {
+        this.stopped = true
         if (this.updateIntervalId != null) {
             globalObject().clearInterval(this.updateIntervalId)
             this.updateIntervalId = null
