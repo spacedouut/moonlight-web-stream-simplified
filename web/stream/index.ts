@@ -794,6 +794,7 @@ export class Stream implements Component {
     async stop(): Promise<boolean> {
         this.isStopped = true
         this.stats.stop()
+        this.debugRecorder.dispose()
 
         if (this.connectionWarningIntervalId != null) {
             clearInterval(this.connectionWarningIntervalId)

@@ -81,19 +81,27 @@ export class StreamDebugRecorder {
     private logs: DebugLogEntry[] = []
     private events: DebugEventEntry[] = []
 
+    private listenerAbort = new AbortController()
+
     constructor() {
-        window.addEventListener("online", () => this.event("online"))
-        window.addEventListener("offline", () => this.event("offline"))
-        document.addEventListener("visibilitychange", () => this.event("visibilitychange", document.visibilityState))
+        const signal = this.listenerAbort.signal
+
+        window.addEventListener("online", () => this.event("online"), { signal })
+        window.addEventListener("offline", () => this.event("offline"), { signal })
+        document.addEventListener("visibilitychange", () => this.event("visibilitychange", document.visibilityState), { signal })
         window.addEventListener("error", event => this.event("error", {
             message: event.message,
             source: event.filename,
             line: event.lineno,
             column: event.colno,
             error: event.error != null ? describeError(event.error) : undefined,
-        }))
-        window.addEventListener("unhandledrejection", event => this.event("unhandledrejection", describeError(event.reason)))
-        getNetworkInformation()?.addEventListener("change", () => this.event("networkchange", describeNetworkInformation()))
+        }), { signal })
+        window.addEventListener("unhandledrejection", event => this.event("unhandledrejection", describeError(event.reason)), { signal })
+        getNetworkInformation()?.addEventListener("change", () => this.event("networkchange", describeNetworkInformation()), { signal })
+    }
+
+    dispose() {
+        this.listenerAbort.abort()
     }
 
     log(line: string, type: LogMessageType | null) {
