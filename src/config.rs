@@ -174,6 +174,9 @@ pub struct WebTransportConfig {
     /// Advertise the leaf certificate hash to browsers.
     #[serde(default)]
     pub advertise_certificate_hash: bool,
+    /// Video frames the relay may have in flight before it drops them and requests a keyframe
+    #[serde(default = "default_web_transport_max_in_flight_video_frames")]
+    pub max_in_flight_video_frames: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +202,9 @@ fn default_bind_address() -> SocketAddr {
 
 fn default_web_transport_bind_address() -> SocketAddr {
     SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 4433, 0, 0))
+}
+fn default_web_transport_max_in_flight_video_frames() -> usize {
+    64
 }
 // -- Moonlight
 

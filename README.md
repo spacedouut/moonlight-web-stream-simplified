@@ -268,7 +268,8 @@ WebTransport streams over HTTP/3 and QUIC. Configure it under `web_server.web_tr
         "web_transport": {
             "bind_address": "[::]:4433",
             "public_url": "https://example.com:4433",
-            "advertise_certificate_hash": false
+            "advertise_certificate_hash": false,
+            "max_in_flight_video_frames": 64
         }
     }
 }
@@ -277,12 +278,18 @@ WebTransport streams over HTTP/3 and QUIC. Configure it under `web_server.web_tr
 TLS is required, and the configured UDP port must be open to clients. `public_url` is optional;
 without it, the browser derives the URL from the current host and configured UDP port.
 `advertise_certificate_hash` is intended only for short-lived ECDSA certificates.
+`max_in_flight_video_frames` (default `64`) limits how many video frames can be sent but not yet
+acknowledged by the browser. When the limit is reached, the relay drops the backlog and requests a
+keyframe instead of delivering late frames. Lower values keep latency down on unstable connections
+at the cost of more keyframe recoveries; at 60 fps, `64` allows about a second of backlog.
 
 WebTransport messages use `u32` big-endian length-prefixed frames with a one-byte kind:
 kind `0` contains the existing JSON messages, and kind `1` contains the existing
 WebSocket channel-byte binary layout. Control packets use reliable, ordered kind-1
 frames on the bidirectional message stream. Video frames use unidirectional streams,
 while audio uses datagrams when they fit and unidirectional streams otherwise.
+The message stream is prioritized over audio, and audio over video. RTT pings are sent as
+datagrams (channel byte `3` followed by a `u32` id) and echoed back by the relay.
 
 ## Config
 The config file is under `server/config.json` relative to the executable.
