@@ -78,6 +78,7 @@ export class StreamStats {
     private transport: Transport | null = null
     private updateIntervalId: number | null = null
     private updateIntervalMs: number | null = null
+    private updatingTransport: Transport | null = null
 
     private history: StreamStatsSample[] = []
     private lastHistoryTime = 0
@@ -142,14 +143,26 @@ export class StreamStats {
         }
     }
 
+    // Only one update per transport runs at a time; a hung update on an old transport must not block the new one.
     private async updateLocalStats() {
-        await Promise.all([
-            this.updateTransportStats(),
-            this.updateVideoStats(),
-            this.updateAudioStats(),
-        ])
+        const transport = this.transport
+        if (transport != null && this.updatingTransport == transport) {
+            return
+        }
+        this.updatingTransport = transport
+        try {
+            await Promise.all([
+                this.updateTransportStats(),
+                this.updateVideoStats(),
+                this.updateAudioStats(),
+            ])
 
-        this.recordHistorySample()
+            this.recordHistorySample()
+        } finally {
+            if (this.updatingTransport == transport) {
+                this.updatingTransport = null
+            }
+        }
     }
     private recordHistorySample() {
         if (!this.transport) {
