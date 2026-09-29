@@ -11,6 +11,7 @@ import { getCurrentLanguage, getTranslations, Language, normalizeLanguage } from
 import { requestKeyboardLock } from "./iframe"
 import "./polyfill/index"
 import { KeyboardModeEvent, KeyboardModeWillChangeEvent, ScreenKeyboard, TextEvent } from "./screen_keyboard"
+import { debugReportFileName, downloadJson } from "./stream/debug_report"
 import { InfoEvent, Stream, StreamCapabilities } from "./stream/index"
 import { defaultStreamInputConfig, MouseMode, ScreenKeyboardSetVisibleEvent, StreamInputConfig } from "./stream/input"
 import { emptyKeyModifiers } from "./stream/keyboard"
@@ -299,7 +300,7 @@ class ViewerApp implements Component {
         this.stream.addInfoListener(this.onInfo.bind(this))
 
         // Create connection info modal
-        const connectionInfo = new ConnectionInfoModal()
+        const connectionInfo = new ConnectionInfoModal(() => this.exportDebugReport())
         const connectionInfoListener = connectionInfo.onInfo.bind(connectionInfo)
         this.stream.addInfoListener(connectionInfoListener)
         showModal(connectionInfo)
@@ -891,6 +892,16 @@ class ViewerApp implements Component {
     getStream(): Stream | null {
         return this.stream
     }
+
+    async exportDebugReport() {
+        try {
+            const report = await this.stream.createDebugReport()
+            downloadJson(debugReportFileName(), report)
+        } catch (error) {
+            console.error("Failed to export debug report", error)
+            showNotification(I.stream.exportDebugFailed, "error")
+        }
+    }
 }
 
 class ConnectionInfoModal implements Modal<void> {
@@ -904,12 +915,13 @@ class ConnectionInfoModal implements Modal<void> {
 
     private options = document.createElement("div")
     private debugDetailButton = document.createElement("button")
+    private exportDebugButton = document.createElement("button")
     private closeButton = document.createElement("button")
 
     private debugDetail = "" // We store this separately because line breaks don't work when the element is not mounted on the DOM
     private debugDetailDisplay = document.createElement("div")
 
-    constructor() {
+    constructor(onExportDebug: () => void) {
         this.root.classList.add("modal-video-connect")
 
         this.text.innerText = I.stream.connecting
@@ -921,6 +933,10 @@ class ConnectionInfoModal implements Modal<void> {
         this.debugDetailButton.innerText = I.stream.showLogs
         this.debugDetailButton.addEventListener("click", this.onDebugDetailClick.bind(this))
         this.options.appendChild(this.debugDetailButton)
+
+        this.exportDebugButton.innerText = I.stream.exportDebug
+        this.exportDebugButton.addEventListener("click", onExportDebug)
+        this.options.appendChild(this.exportDebugButton)
 
         this.closeButton.innerText = I.stream.close
         this.closeButton.addEventListener("click", this.onClose.bind(this))
@@ -1020,6 +1036,7 @@ class ViewerSidebar implements Component, Sidebar {
     private fullscreenButton = document.createElement("button")
 
     private statsButton = document.createElement("button")
+    private exportDebugButton = document.createElement("button")
     private exitStreamButton = document.createElement("button")
 
     private mouseMode: SelectComponent
@@ -1102,6 +1119,13 @@ class ViewerSidebar implements Component, Sidebar {
             }
         })
         this.buttonDiv.appendChild(this.statsButton)
+
+        // Export debug report
+        this.exportDebugButton.innerText = I.stream.exportDebug
+        this.exportDebugButton.addEventListener("click", () => {
+            this.app.exportDebugReport()
+        })
+        this.buttonDiv.appendChild(this.exportDebugButton)
 
         // Close stream
         this.exitStreamButton.innerText = I.stream.exit

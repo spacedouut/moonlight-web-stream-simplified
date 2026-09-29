@@ -25,6 +25,8 @@ export const en = {
         hideKeyboard: "Hide Keyboard",
         fullscreen: "Fullscreen",
         stats: "Stats",
+        exportDebug: "Export Debug",
+        exportDebugFailed: "Failed to export debug report",
         exit: "Exit",
         mouseMode: "Mouse Mode",
         touchMode: "Touch Mode",
