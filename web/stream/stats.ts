@@ -152,7 +152,7 @@ export class StreamStats {
         this.updatingTransport = transport
         try {
             await Promise.all([
-                this.updateTransportStats(),
+                this.updateTransportStats(transport),
                 this.updateVideoStats(),
                 this.updateAudioStats(),
             ])
@@ -185,14 +185,17 @@ export class StreamStats {
             this.history.splice(0, this.history.length - HISTORY_MAX_SAMPLES)
         }
     }
-    private async updateTransportStats() {
-        if (!this.transport) {
+    private async updateTransportStats(transport: Transport | null) {
+        if (!transport) {
             console.debug("Cannot query stats without transport")
             return
         }
 
         try {
-            const stats = await this.transport.getStats()
+            const stats = await transport.getStats()
+            if (this.transport != transport) {
+                return
+            }
             for (const key in stats) {
                 const value = stats[key]
 
