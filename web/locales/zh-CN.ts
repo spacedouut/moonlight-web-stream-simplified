@@ -27,6 +27,8 @@ export const zhCN: Translations = {
         hideKeyboard: "隐藏键盘",
         fullscreen: "全屏",
         stats: "统计",
+        exportDebug: "导出调试信息",
+        exportDebugFailed: "导出调试报告失败",
         exit: "退出",
         mouseMode: "鼠标模式",
         touchMode: "触摸模式",

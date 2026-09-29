@@ -27,6 +27,8 @@ export const koKR: Translations = {
         hideKeyboard: "키보드 숨기기",
         fullscreen: "전체 화면",
         stats: "통계",
+        exportDebug: "디버그 내보내기",
+        exportDebugFailed: "디버그 보고서를 내보내지 못했습니다",
         exit: "종료",
         mouseMode: "마우스 모드",
         touchMode: "터치 모드",

@@ -5,6 +5,7 @@ import { ControlPacket, ControlPacket_Tags, VideoFormats } from "../uniffi/moonl
 import { globalObject, wait } from "../util"
 import { AudioPlayer, AudioPlayerSetup } from "./audio/index"
 import { buildAudioPipeline } from "./audio/pipeline"
+import { StreamDebugRecorder } from "./debug_report"
 import { defaultStreamInputConfig, StreamInput } from "./input"
 import { Logger, LogMessageInfo } from "./log"
 import { gatherPipeInfo, pipeName } from "./pipeline/index"
@@ -102,6 +103,7 @@ const FALLBACK_RECONNECT_DELAY_MS = 500
 
 export class Stream implements Component {
     private logger: Logger = new Logger()
+    private debugRecorder = new StreamDebugRecorder()
 
     private api: Api
 
@@ -158,6 +160,8 @@ export class Stream implements Component {
 
     private debugLog(message: string, additional?: LogMessageInfo) {
         for (const line of message.split("\n")) {
+            this.debugRecorder.log(line, additional?.type ?? null)
+
             const event: InfoEvent = new CustomEvent("stream-info", {
                 detail: { type: "addDebugLine", line, additional }
             })
@@ -206,6 +210,8 @@ export class Stream implements Component {
         } else if (desiredTransport == "webtransport") {
             shutdownReason = await this.tryWebTransportTransport()
         }
+
+        this.debugRecorder.event("transportShutdown", { transport: desiredTransport, reason: shutdownReason ?? null })
 
         return shutdownReason == "failed" || shutdownReason == "disconnect"
     }
@@ -787,6 +793,7 @@ export class Stream implements Component {
 
     async stop(): Promise<boolean> {
         this.isStopped = true
+        this.stats.stop()
 
         if (this.connectionWarningIntervalId != null) {
             clearInterval(this.connectionWarningIntervalId)
@@ -842,5 +849,30 @@ export class Stream implements Component {
 
     getStreamerSize(): [number, number] {
         return this.streamerSize
+    }
+
+    async createDebugReport(): Promise<Record<string, unknown>> {
+        let transportDebug: Record<string, unknown> | null = null
+        if (this.transport?.getDebugInfo) {
+            try {
+                transportDebug = await this.transport.getDebugInfo()
+            } catch (error) {
+                transportDebug = { error: describeError(error) }
+            }
+        }
+
+        return this.debugRecorder.buildReport({
+            hostId: this.hostId,
+            appId: this.appId,
+            streamerSize: this.streamerSize,
+            desiredTransport: this.transportOverride ?? this.settings.dataTransport,
+            transport: this.transport?.implementationName ?? null,
+            failureReason: this.failureReason,
+            stopped: this.isStopped,
+            settings: this.settings,
+            stats: this.stats.getCurrentStats(),
+            statsHistory: this.stats.getHistory(),
+            transportDebug,
+        })
     }
 }

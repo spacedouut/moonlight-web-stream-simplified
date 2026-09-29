@@ -27,6 +27,8 @@ export const ptBR: Translations = {
         hideKeyboard: "Ocultar Teclado",
         fullscreen: "Tela Cheia",
         stats: "Estatísticas",
+        exportDebug: "Exportar Depuração",
+        exportDebugFailed: "Falha ao exportar o relatório de depuração",
         exit: "Sair",
         mouseMode: "Modo do Mouse",
         touchMode: "Modo de Toque",
