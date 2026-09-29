@@ -86,7 +86,7 @@ export type WebSocketStreamResponse = { video_codec: number, audio_sample_rate: 
 
 export type WebTransportConfigResponse = { url: string | null, port: number, certificate_hash: string | null, };
 
-export const WebSocketChannel = { CONTROL: 0, VIDEO: 1, AUDIO: 2, };
+export const WebSocketChannel = { CONTROL: 0, VIDEO: 1, AUDIO: 2, PING: 3, };
 
 export const StreamSupportedVideoCodecs = { H264: 1, H264_HIGH8_444: 4, H265: 256, H265_MAIN10: 512, H265_REXT8_444: 1024, H265_REXT10_444: 2048, AV1_MAIN8: 4096, AV1_MAIN10: 8192, AV1_HIGH8_444: 16384, AV1_HIGH10_444: 32768, };
 

@@ -6,8 +6,18 @@
 //! ordered delivery.
 //! Video packets use unidirectional streams, while audio packets use
 //! datagrams when they fit and unidirectional streams otherwise.
+//! Ping datagrams (`PING` channel byte followed by a `u32` id) are echoed back
+//! as datagrams so the measured RTT isn't queued behind stream data.
+//!
+//! Stream priorities: the message stream (control and stats) is sent before
+//! audio, which is sent before video. When more than
+//! `max_in_flight_video_frames` video frames are unacknowledged, the relay
+//! resets them, drops frames until the next keyframe and requests one.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use actix_web::{
     get,
@@ -30,13 +40,14 @@ use sha2::{Digest, Sha256};
 use tokio::{
     select,
     sync::{
-        Semaphore,
+        OwnedSemaphorePermit, Semaphore,
         mpsc::{self, Sender, error::TrySendError},
+        watch,
     },
     time::{interval, timeout},
 };
-use tracing::{Instrument, debug_span, error, info, instrument, trace, warn};
-use wtransport::{Connection, Endpoint};
+use tracing::{Instrument, debug, debug_span, error, info, instrument, trace, warn};
+use wtransport::{Connection, Endpoint, VarInt};
 
 use crate::{
     api::{
@@ -49,6 +60,12 @@ use crate::{
     app::{App, AppError},
     config::WebTransportConfig,
 };
+
+const MESSAGE_STREAM_PRIORITY: i32 = 2;
+const AUDIO_STREAM_PRIORITY: i32 = 1;
+const VIDEO_STREAM_PRIORITY: i32 = 0;
+const PING_DATAGRAM_LEN: usize = 5;
+const IDR_REQUEST_RETRY: Duration = Duration::from_secs(1);
 
 enum Outgoing {
     Message(String),
@@ -176,6 +193,7 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
             .await
             .map_err(|_| AppError::StreamClosed)?
             .map_err(|_| AppError::StreamClosed)?;
+    message_send.set_priority(MESSAGE_STREAM_PRIORITY);
     let request = read_frame(&mut message_recv)
         .await?
         .ok_or(AppError::StreamClosed)?;
@@ -250,6 +268,7 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
                                 return;
                             };
                             if let Ok(mut stream) = opening.await {
+                                stream.set_priority(AUDIO_STREAM_PRIORITY);
                                 let _ = stream.write_all(&bytes).await;
                                 let _ = stream.finish().await;
                             }
@@ -306,6 +325,15 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
         }
     });
 
+    let max_in_flight_video_frames = app
+        .config()
+        .web_server
+        .web_transport
+        .as_ref()
+        .map_or(64, |config| config.max_in_flight_video_frames)
+        .max(1);
+    let mut video_sender = VideoSender::new(connection.clone(), max_in_flight_video_frames);
+
     let control_config = create_control_packet_config();
     let mut relay_stats_ticker = interval(Duration::from_secs(1));
     let mut stream = stream;
@@ -331,12 +359,18 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
                         continue;
                     }
                     MoonlightStreamEvent::Video(VideoStreamEvent::OnFrame(frame)) => {
+                        let idr = frame.metadata().frame_type.serialize() == 2;
                         let mut buffer = vec![0; 1 + 5 + frame.raw().len()];
                         buffer[0] = WebSocketChannel::VIDEO;
-                        buffer[1] = if frame.metadata().frame_type.serialize() == 2 { 1 } else { 0 };
+                        buffer[1] = if idr { 1 } else { 0 };
                         buffer[2..6].copy_from_slice(&(frame.metadata().timestamp.as_micros() as u32).to_be_bytes());
                         buffer[6..].copy_from_slice(frame.raw());
-                        Outgoing::Uni(buffer.into())
+                        if video_sender.send(buffer.into(), idr)
+                            && let Err(err) = stream.send_raw(ControlPacket::RequestIdr)
+                        {
+                            warn!(error = %err, "failed to request idr after dropping video backlog");
+                        }
+                        continue;
                     }
                     MoonlightStreamEvent::Control(ControlStreamEvent::Packet(packet)) => {
                         let mut buffer = vec![0; ControlPacket::MAX_SIZE + 1];
@@ -380,11 +414,131 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
                     _ => {}
                 }
             }
+            datagram = connection.receive_datagram() => {
+                let Ok(datagram) = datagram else {
+                    break;
+                };
+                let payload = datagram.payload();
+                if payload.len() == PING_DATAGRAM_LEN
+                    && payload[0] == WebSocketChannel::PING
+                    && connection.send_datagram(payload).is_err()
+                {
+                    break;
+                }
+            }
             _ = connection.closed() => break,
         }
     }
     let _ = stream.disconnect();
     Ok(())
+}
+
+/// Sends each video frame on its own unidirectional stream. When too many
+/// frames are unacknowledged, the backlog is reset instead of delivered late:
+/// frames are dropped until the next keyframe, which the caller requests.
+struct VideoSender {
+    connection: Connection,
+    max_in_flight: usize,
+    in_flight: Arc<Semaphore>,
+    cancel: watch::Sender<()>,
+    last_idr_request: Option<Instant>,
+}
+
+impl VideoSender {
+    fn new(connection: Connection, max_in_flight: usize) -> Self {
+        Self {
+            connection,
+            max_in_flight,
+            in_flight: Arc::new(Semaphore::new(max_in_flight)),
+            cancel: watch::Sender::new(()),
+            last_idr_request: None,
+        }
+    }
+
+    /// Returns true if the caller should request a keyframe.
+    fn send(&mut self, frame: Bytes, idr: bool) -> bool {
+        if idr {
+            // Everything still in flight precedes this keyframe and is obsolete.
+            self.cancel_in_flight();
+            self.last_idr_request = None;
+        } else if self.last_idr_request.is_some() {
+            return self.should_request_idr();
+        }
+
+        let Ok(permit) = self.in_flight.clone().try_acquire_owned() else {
+            debug!(
+                max_in_flight = self.max_in_flight,
+                "dropping web transport video backlog and requesting idr"
+            );
+            self.cancel_in_flight();
+            return self.should_request_idr();
+        };
+
+        tokio::spawn(send_video_frame(
+            self.connection.clone(),
+            frame,
+            self.cancel.subscribe(),
+            permit,
+        ));
+        false
+    }
+
+    fn cancel_in_flight(&mut self) {
+        self.cancel.send_replace(());
+        // Cancelled frames release permits on the old semaphore once their
+        // streams are reset, so new frames don't wait on them.
+        self.in_flight = Arc::new(Semaphore::new(self.max_in_flight));
+    }
+
+    fn should_request_idr(&mut self) -> bool {
+        let now = Instant::now();
+        if self
+            .last_idr_request
+            .is_some_and(|last| now.duration_since(last) < IDR_REQUEST_RETRY)
+        {
+            return false;
+        }
+        self.last_idr_request = Some(now);
+        true
+    }
+}
+
+async fn send_video_frame(
+    connection: Connection,
+    frame: Bytes,
+    mut cancel: watch::Receiver<()>,
+    _permit: OwnedSemaphorePermit,
+) {
+    let opening = select! {
+        biased;
+        _ = cancel.changed() => return,
+        opening = connection.open_uni() => opening,
+    };
+    let Ok(opening) = opening else {
+        return;
+    };
+    let mut stream = select! {
+        biased;
+        _ = cancel.changed() => return,
+        stream = opening => match stream {
+            Ok(stream) => stream,
+            Err(_) => return,
+        },
+    };
+    stream.set_priority(VIDEO_STREAM_PRIORITY);
+
+    let cancelled = select! {
+        biased;
+        _ = cancel.changed() => true,
+        _ = async {
+            if stream.write_all(&frame).await.is_ok() {
+                let _ = stream.finish().await;
+            }
+        } => false,
+    };
+    if cancelled {
+        let _ = stream.reset(VarInt::from_u32(0));
+    }
 }
 
 fn enqueue(sender: &Sender<Outgoing>, out: Outgoing) -> bool {

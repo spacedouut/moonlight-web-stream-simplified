@@ -10,6 +10,9 @@ import { createSupportedVideoFormatsBits, getSelectedVideoCodec } from "../video
 import { VideoRenderer, TrackVideoRenderer } from "../video/index"
 import { generateControlPacketConfig, IControlStream, Transport, TransportAudioType, TransportConnectData, TransportOptions, TransportShutdown, TransportVideoType } from "./index"
 
+const PING_DATAGRAM_LENGTH = 5
+const PING_TIMEOUT_MS = 1000
+
 export class WebTransportTransport implements Transport {
     readonly implementationName = "web_transport"
     private transport: WebTransport
@@ -27,8 +30,10 @@ export class WebTransportTransport implements Transport {
     private videoPipeline: DataPipe | null = null
     private audioPipeline: DataPipe | null = null
     private relayStats: { rttMs: number, rttVarianceMs: number } | null = null
-    private pongReceiveResolve: (() => void) | null = null
-    private onPongPromise: Promise<number> | null = null
+    private pingWriter: WritableStreamDefaultWriter<Uint8Array> | null = null
+    private nextPingId = 0
+    private pendingPings = new Map<number, number>()
+    private relayToClientRttMs: number | null = null
 
     controlStream: WebTransportControlStream
     onconnect: ((connectData: TransportConnectData) => void) | null = null
@@ -59,6 +64,7 @@ export class WebTransportTransport implements Transport {
             await this.transport.ready
             this.messageStream = await this.transport.createBidirectionalStream()
             this.messageWriter = this.messageStream.writable.getWriter()
+            this.pingWriter = this.transport.datagrams.writable.getWriter()
             void this.readMessages(this.messageStream.readable)
             void this.readUnidirectionalStreams()
             void this.readDatagrams()
@@ -224,8 +230,7 @@ export class WebTransportTransport implements Transport {
             this.serverError = message.Error
             this.logger?.debug(message.Error.message, { type: "fatalDescription" })
         } else if ("Stats" in message) {
-            if ("Pong" in message.Stats) this.onPongReceive(message.Stats.Pong)
-            else if ("RelayRtt" in message.Stats) this.relayStats = { rttMs: message.Stats.RelayRtt.rtt_ms, rttVarianceMs: message.Stats.RelayRtt.rtt_variance_ms }
+            if ("RelayRtt" in message.Stats) this.relayStats = { rttMs: message.Stats.RelayRtt.rtt_ms, rttVarianceMs: message.Stats.RelayRtt.rtt_variance_ms }
         }
     }
 
@@ -233,6 +238,7 @@ export class WebTransportTransport implements Transport {
         if (data.length == 0) return
         const channel = data[0]
         if (channel == WebSocketChannel.CONTROL) this.controlStream.onRawPacket(data.subarray(1))
+        else if (channel == WebSocketChannel.PING) this.onPingDatagram(data)
         else if (channel == WebSocketChannel.VIDEO) {
             this.videoPipeline?.submitPacket(data.subarray(1))
             if (this.videoPipeline && "pollRequestIdr" in this.videoPipeline && typeof this.videoPipeline.pollRequestIdr == "function" && this.videoPipeline.pollRequestIdr()) {
@@ -281,33 +287,35 @@ export class WebTransportTransport implements Transport {
             out.hostToRelayRttMs = this.relayStats.rttMs
             out.hostToRelayRttVarianceMs = this.relayStats.rttVarianceMs
         }
-        out.relayToClientRttMs = await this.doPing()
+        this.sendPing()
+        if (this.relayToClientRttMs != null) out.relayToClientRttMs = this.relayToClientRttMs
         return out
     }
 
-    private onPongReceive(_id: number): void {
-        this.pongReceiveResolve?.()
+    // Pings are datagrams so the RTT isn't queued behind video on the streams.
+    private sendPing(): void {
+        if (!this.wasConnected || !this.pingWriter) return
+        const now = performance.now()
+        for (const [id, sentAt] of this.pendingPings) {
+            if (now - sentAt < PING_TIMEOUT_MS) return
+            this.pendingPings.delete(id)
+        }
+        const id = this.nextPingId
+        this.nextPingId = (this.nextPingId + 1) >>> 0
+        const datagram = new Uint8Array(PING_DATAGRAM_LENGTH)
+        datagram[0] = WebSocketChannel.PING
+        new DataView(datagram.buffer).setUint32(1, id)
+        this.pendingPings.set(id, now)
+        this.pingWriter.write(datagram).catch(() => this.pendingPings.delete(id))
     }
 
-    private async doPing(): Promise<number> {
-        await this.onConnected
-        if (this.onPongPromise) return await this.onPongPromise
-        this.onPongPromise = new Promise((resolve, reject) => {
-            const start = performance.now()
-            const timeoutId = globalObject().setTimeout(() => {
-                this.pongReceiveResolve = null
-                this.onPongPromise = null
-                reject(new Error("pong timeout"))
-            }, 5000)
-            this.pongReceiveResolve = () => {
-                globalObject().clearTimeout(timeoutId)
-                this.pongReceiveResolve = null
-                this.onPongPromise = null
-                resolve(performance.now() - start)
-            }
-        })
-        this.writeMessage({ Stats: { Ping: Math.floor(Math.random() * 1000) } })
-        return await this.onPongPromise
+    private onPingDatagram(data: Uint8Array<ArrayBuffer>): void {
+        if (data.length != PING_DATAGRAM_LENGTH) return
+        const id = new DataView(data.buffer, data.byteOffset).getUint32(1)
+        const sentAt = this.pendingPings.get(id)
+        if (sentAt == null) return
+        this.pendingPings.delete(id)
+        this.relayToClientRttMs = performance.now() - sentAt
     }
 
     sendControl(packet: ControlPacket, config: ControlPacketConfig): void {
