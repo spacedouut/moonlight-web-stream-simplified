@@ -157,6 +157,9 @@ export class StreamStats {
                 this.updateAudioStats(),
             ])
 
+            if (this.transport != transport || this.updateIntervalId == null) {
+                return
+            }
             this.recordHistorySample()
         } finally {
             if (this.updatingTransport == transport) {
