@@ -57,6 +57,9 @@ export interface Transport {
     setAudioPipeline(type: "data", pipeline: (DataPipe & AudioPlayer)): Promise<void>
 
     getStats(): Promise<Record<string, StatValue>>
+
+    /// Raw transport internals for the exported debug report
+    getDebugInfo?(): Promise<Record<string, unknown>>
 }
 
 export function generateControlPacketConfig(): ControlPacketConfig {

@@ -475,6 +475,20 @@ export class WebRTCTransport implements Transport {
         return "h264"
     }
 
+    async getDebugInfo(): Promise<Record<string, unknown>> {
+        const report = await this.peer.getStats()
+
+        return {
+            connectionState: this.peer.connectionState,
+            iceConnectionState: this.peer.iceConnectionState,
+            iceGatheringState: this.peer.iceGatheringState,
+            signalingState: this.peer.signalingState,
+            localDescription: this.peer.localDescription?.sdp ?? null,
+            remoteDescription: this.peer.remoteDescription?.sdp ?? null,
+            rtcStats: Array.from(report.values()),
+        }
+    }
+
     private lastTotalDecodeTime = 0
     private lastFramesDecoded = 0
     async getStats(): Promise<Record<string, StatValue>> {

@@ -10,6 +10,18 @@ const STATS_LEVELS: StatsLevel[] = ["minimal", "medium", "max"]
 
 const MINIMAL_TRANSPORT_KEYS = ["resolution", "codec", "currentFps", "relayToClientRttMs"]
 
+const BACKGROUND_UPDATE_INTERVAL_MS = 1000
+const OVERLAY_UPDATE_INTERVAL_MS = 100
+const HISTORY_SAMPLE_INTERVAL_MS = 1000
+const HISTORY_MAX_SAMPLES = 900
+
+export type StreamStatsSample = {
+    time: number
+    transport: Record<string, StatValue>
+    video: Record<string, StatValue>
+    audio: Record<string, StatValue>
+}
+
 export type StreamStatsData = {
     videoPipeline: string | null
     audioPipeline: string | null
@@ -65,6 +77,12 @@ export class StreamStats {
     private level: StatsLevel = "off"
     private transport: Transport | null = null
     private updateIntervalId: number | null = null
+    private updateIntervalMs: number | null = null
+    private updatingTransport: Transport | null = null
+    private stopped = false
+
+    private history: StreamStatsSample[] = []
+    private lastHistoryTime = 0
 
     private videoPipe: Pipe | null = null
     private audioPipe: Pipe | null = null
@@ -84,6 +102,8 @@ export class StreamStats {
 
     setTransport(transport: Transport) {
         this.transport = transport
+
+        this.checkEnabled()
     }
     getLevel(): StatsLevel {
         return this.level
@@ -101,30 +121,90 @@ export class StreamStats {
         this.setLevel(index < STATS_LEVELS.length - 1 ? STATS_LEVELS[index + 1] : "off")
     }
 
+    // Stats are always sampled in the background so the debug report has a history,
+    // the overlay only raises the sampling rate.
     private checkEnabled() {
-        if (this.isEnabled() && this.updateIntervalId == null) {
-            this.updateIntervalId = globalObject().setInterval(this.updateLocalStats.bind(this), 100)
-        } else if (!this.isEnabled() && this.updateIntervalId != null) {
+        if (this.stopped) {
+            return
+        }
+
+        const intervalMs = this.isEnabled() ? OVERLAY_UPDATE_INTERVAL_MS : BACKGROUND_UPDATE_INTERVAL_MS
+        if (this.updateIntervalId != null && this.updateIntervalMs == intervalMs) {
+            return
+        }
+
+        if (this.updateIntervalId != null) {
+            globalObject().clearInterval(this.updateIntervalId)
+        }
+        this.updateIntervalId = globalObject().setInterval(this.updateLocalStats.bind(this), intervalMs)
+        this.updateIntervalMs = intervalMs
+    }
+
+    stop() {
+        this.stopped = true
+        if (this.updateIntervalId != null) {
             globalObject().clearInterval(this.updateIntervalId)
             this.updateIntervalId = null
+            this.updateIntervalMs = null
         }
     }
 
+    // Only one update per transport runs at a time; a hung update on an old transport must not block the new one.
     private async updateLocalStats() {
-        Promise.all([
-            this.updateTransportStats(),
-            this.updateVideoStats(),
-            this.updateAudioStats(),
-        ])
+        const transport = this.transport
+        if (transport != null && this.updatingTransport == transport) {
+            return
+        }
+        this.updatingTransport = transport
+        try {
+            await Promise.all([
+                this.updateTransportStats(transport),
+                this.updateVideoStats(),
+                this.updateAudioStats(),
+            ])
+
+            if (this.transport != transport || this.updateIntervalId == null) {
+                return
+            }
+            this.recordHistorySample()
+        } finally {
+            if (this.updatingTransport == transport) {
+                this.updatingTransport = null
+            }
+        }
     }
-    private async updateTransportStats() {
+    private recordHistorySample() {
         if (!this.transport) {
+            return
+        }
+
+        const now = Date.now()
+        if (now - this.lastHistoryTime < HISTORY_SAMPLE_INTERVAL_MS) {
+            return
+        }
+        this.lastHistoryTime = now
+
+        this.history.push({
+            time: now,
+            transport: { ...this.statsData.transport },
+            video: { ...this.statsData.video },
+            audio: { ...this.statsData.audio },
+        })
+        if (this.history.length > HISTORY_MAX_SAMPLES) {
+            this.history.splice(0, this.history.length - HISTORY_MAX_SAMPLES)
+        }
+    }
+    private async updateTransportStats(transport: Transport | null) {
+        if (!transport) {
             console.debug("Cannot query stats without transport")
             return
         }
 
         try {
-            const stats = await this.transport.getStats()
+            const stats = await transport.getStats()
+            if (this.transport != transport) {
+                return
+            }
             for (const key in stats) {
                 const value = stats[key]
 
@@ -160,6 +240,10 @@ export class StreamStats {
     setAudioPipeline(name: string, pipe: Pipe | null) {
         this.statsData.audioPipeline = name
         this.audioPipe = pipe
+    }
+
+    getHistory(): StreamStatsSample[] {
+        return this.history.slice()
     }
 
     getCurrentStats(): StreamStatsData {
