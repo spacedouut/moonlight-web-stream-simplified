@@ -3,7 +3,7 @@ use crate::api::stream::webrtc::control::ControlChannel;
 use crate::api::stream::webrtc::ext_color_space::COLOR_SPACE_URI;
 use crate::api::stream::webrtc::stream::webrtc_loop;
 use crate::api::stream::webrtc::video::VideoChannel;
-use crate::config::PortRange;
+use crate::config::{PortRange, WebRtcConfig};
 use actix_web::HttpRequest;
 use actix_web::body::BoxBody;
 use actix_web::web::{Data, Path};
@@ -32,6 +32,7 @@ use moonlight_common::webrtc::sdp::Session;
 use rtc::ice::network_type::NetworkType;
 use rtc::interceptor::Registry;
 use rtc::peer_connection::configuration::media_engine::MIME_TYPE_OPUS;
+use rtc::peer_connection::transport::RTCDtlsRole;
 use rtc::rtp_transceiver::rtp_sender::{
     RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RTCRtpHeaderExtensionCapability, RtpCodecKind,
 };
@@ -176,6 +177,27 @@ fn create_media_engine(video_formats: &HashMap<VideoFormat, RTCRtpCodecParameter
     media_engine
 }
 
+fn create_setting_engine(config: &WebRtcConfig) -> SettingEngineBuilder {
+    let mut setting_engine = SettingEngineBuilder::new();
+    if let Some(mapping) = config.nat_1to1.as_ref() {
+        setting_engine = setting_engine.with_nat_1to1_ips(
+            mapping.ips.clone(),
+            into_webrtc_ice_candidate(mapping.ice_candidate_type),
+        );
+    }
+
+    setting_engine
+        .with_include_loopback_candidate(config.include_loopback_candidates)
+        .with_ice_timeouts(
+            Some(Duration::from_secs(5)),
+            Some(Duration::from_secs(15)),
+            Some(Duration::from_secs(2)),
+        )
+        .with_network_types(vec![NetworkType::Udp4])
+        // Answer with a=setup:passive so the browser sends the DTLS ClientHello.
+        .with_answering_dtls_role(RTCDtlsRole::Server)
+}
+
 struct WebRtcHandler {
     on_ice_gathering_finished: Notify,
     on_data_channel_sender: mpsc::UnboundedSender<Arc<dyn DataChannel>>,
@@ -237,25 +259,7 @@ pub async fn webrtc_post(
     let offer = RTCSessionDescription::offer(session_description)?;
 
     // -- Create WebRtc peer
-    // Create settings
-    let mut setting_engine = SettingEngineBuilder::new();
-    if let Some(mapping) = app.config().webrtc.nat_1to1.as_ref() {
-        setting_engine = setting_engine.with_nat_1to1_ips(
-            mapping.ips.clone(),
-            into_webrtc_ice_candidate(mapping.ice_candidate_type),
-        );
-    }
-
-    setting_engine = setting_engine
-        .with_include_loopback_candidate(app.config().webrtc.include_loopback_candidates);
-
-    setting_engine = setting_engine.with_ice_timeouts(
-        Some(Duration::from_secs(5)),
-        Some(Duration::from_secs(15)),
-        Some(Duration::from_secs(2)),
-    );
-
-    setting_engine = setting_engine.with_network_types(vec![NetworkType::Udp4]);
+    let setting_engine = create_setting_engine(&app.config().webrtc);
 
     // Create video
     let mut video_channel = VideoChannel::new(
@@ -735,4 +739,144 @@ pub async fn webrtc_delete(app: Data<App>, stream_id: Path<u32>) -> Result<HttpR
     Ok(HttpResponse::Ok()
         .finish()
         .set_body(BoxBody::new("stream not found")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn wait_for_connected(handler: &WebRtcHandler) -> RTCPeerConnectionState {
+        for _ in 0..100 {
+            let state = *handler.peer_state.lock().expect("lock peer state");
+            if matches!(
+                state,
+                RTCPeerConnectionState::Connected
+                    | RTCPeerConnectionState::Failed
+                    | RTCPeerConnectionState::Closed
+            ) {
+                return state;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        *handler.peer_state.lock().expect("lock peer state")
+    }
+
+    async fn create_peer(
+        setting_engine: SettingEngineBuilder,
+        addr: SocketAddr,
+    ) -> (
+        Arc<dyn PeerConnection>,
+        Arc<WebRtcHandler>,
+        mpsc::UnboundedReceiver<Arc<dyn DataChannel>>,
+    ) {
+        let mut media_engine = create_media_engine(&HashMap::new());
+        let interceptor_registry =
+            register_default_interceptors(Registry::new(), &mut media_engine)
+                .expect("register default interceptors");
+
+        let (on_data_channel_sender, on_data_channel) = mpsc::unbounded_channel();
+        let handler = Arc::new(WebRtcHandler {
+            peer_state: Mutex::new(RTCPeerConnectionState::New),
+            on_ice_gathering_finished: Notify::new(),
+            on_data_channel_sender,
+        });
+
+        let peer = PeerConnectionBuilder::default()
+            .with_media_engine(media_engine)
+            .with_interceptor_registry(interceptor_registry)
+            .with_setting_engine(setting_engine.build())
+            .with_udp_addrs(vec![addr])
+            .with_handler(handler.clone())
+            .with_configuration(RTCConfigurationBuilder::default().build())
+            .build()
+            .await
+            .expect("build peer");
+
+        (Arc::new(peer), handler, on_data_channel)
+    }
+
+    async fn gathered_description(
+        peer: &dyn PeerConnection,
+        handler: &WebRtcHandler,
+    ) -> RTCSessionDescription {
+        select! {
+            _ = handler.on_ice_gathering_finished.notified() => {},
+            _ = sleep(Duration::from_secs(5)) => {},
+        }
+        peer.local_description().await.expect("local description")
+    }
+
+    #[actix_web::test]
+    async fn loopback_dtls_handshake_completes() {
+        let config = WebRtcConfig {
+            include_loopback_candidates: true,
+            ..Default::default()
+        };
+
+        // Browser-like offerer: default DTLS role, offers a=setup:actpass.
+        let (offerer, offerer_handler, _) = create_peer(
+            SettingEngineBuilder::new()
+                .with_include_loopback_candidate(true)
+                .with_network_types(vec![NetworkType::Udp4]),
+            SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
+        )
+        .await;
+        let (answerer, answerer_handler, mut answerer_data_channels) = create_peer(
+            create_setting_engine(&config),
+            SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
+        )
+        .await;
+
+        let _control = offerer
+            .create_data_channel("moonlight.control", None)
+            .await
+            .expect("create data channel");
+
+        let offer = offerer.create_offer(None).await.expect("create offer");
+        offerer
+            .set_local_description(offer)
+            .await
+            .expect("set offerer local description");
+        let offer = gathered_description(&*offerer, &offerer_handler).await;
+        assert!(offer.sdp.contains("a=setup:actpass"), "{}", offer.sdp);
+
+        answerer
+            .set_remote_description(offer)
+            .await
+            .expect("set answerer remote description");
+        let answer = answerer.create_answer(None).await.expect("create answer");
+        answerer
+            .set_local_description(answer)
+            .await
+            .expect("set answerer local description");
+        let answer = gathered_description(&*answerer, &answerer_handler).await;
+        assert!(answer.sdp.contains("a=setup:passive"), "{}", answer.sdp);
+
+        offerer
+            .set_remote_description(answer)
+            .await
+            .expect("set offerer remote description");
+
+        assert_eq!(
+            wait_for_connected(&answerer_handler).await,
+            RTCPeerConnectionState::Connected
+        );
+        assert_eq!(
+            wait_for_connected(&offerer_handler).await,
+            RTCPeerConnectionState::Connected
+        );
+
+        // Data channels open over SCTP, which only runs once DTLS has completed.
+        let data_channel = select! {
+            data_channel = answerer_data_channels.recv() => data_channel.expect("data channel"),
+            _ = sleep(Duration::from_secs(10)) => panic!("data channel never opened"),
+        };
+        assert_eq!(
+            data_channel.label().await.expect("label"),
+            "moonlight.control"
+        );
+
+        offerer.close().await.expect("close offerer");
+        answerer.close().await.expect("close answerer");
+    }
 }

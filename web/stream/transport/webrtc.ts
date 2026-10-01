@@ -23,6 +23,9 @@ const DISCONNECTED_GRACE_MAX_SEC = 15
 // that keeps receiving packets without decoding any as a disconnect.
 const STALL_CHECK_INTERVAL_MS = 1000
 const DECODE_STALL_TIMEOUT_TICKS = 5
+// The first frame needs a keyframe and decoder setup, which can take several
+// seconds on slow clients, so allow longer before the first frame is decoded.
+const FIRST_FRAME_TIMEOUT_TICKS = 15
 
 export class WebRTCTransport implements Transport {
 
@@ -214,7 +217,8 @@ export class WebRTCTransport implements Transport {
             // no packets at all is a legitimate quiet period.
             if (packetsReceived > this.lastStallPacketsReceived && framesDecoded <= this.lastStallFramesDecoded) {
                 this.stallTicks++
-                if (this.stallTicks >= DECODE_STALL_TIMEOUT_TICKS) {
+                const timeoutTicks = framesDecoded == 0 ? FIRST_FRAME_TIMEOUT_TICKS : DECODE_STALL_TIMEOUT_TICKS
+                if (this.stallTicks >= timeoutTicks) {
                     this.logger?.debug("video decode stalled while packets kept arriving, reconnecting")
                     this.stopStallWatchdog()
                     this.onclose?.("disconnect")
