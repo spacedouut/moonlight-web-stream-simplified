@@ -1,10 +1,10 @@
 import { DetailedHost, UndetailedHost } from "../../api_bindings"
-import { Api, apiDeleteHost, apiGetHost, isDetailedHost, apiPostPair, apiWakeUp, apiPatchHost, describeError } from "../../api"
+import { Api, apiDeleteHost, apiGetHost, isDetailedHost, apiPostPair, apiWakeUp, apiPatchHost, describeError, getCurrentUser } from "../../api"
 import { Component, ComponentEvent } from "../index"
 import { getCurrentLanguage, getTranslations } from "../../i18n"
 import { setContextMenu } from "../context_menu"
 import { showNotification } from "../notification"
-import { showMessage } from "../modal/index"
+import { showMessage, showPrompt } from "../modal/index"
 import { HOST_IMAGE, HOST_OVERLAY_LOCK, HOST_OVERLAY_NONE, HOST_OVERLAY_OFFLINE } from "../../resources/index"
 
 export type HostEventListener = (event: ComponentEvent<Host>) => void
@@ -118,21 +118,55 @@ export class Host implements Component {
             callback: async () => this.forceFetch()
         })
 
-        if (this.cache?.server_state != null && this.cache?.paired == "NotPaired") {
+        const user = getCurrentUser()
+        if (user.is_admin) {
+            if (this.cache?.server_state != null && this.cache?.paired == "NotPaired") {
+                elements.push({
+                    name: i.pair,
+                    callback: this.pair.bind(this)
+                })
+            }
+
+            if (user.forward_auth) {
+                elements.push({
+                    name: i.manageAccess,
+                    callback: this.manageAccess.bind(this)
+                })
+            }
+
             elements.push({
-                name: i.pair,
-                callback: this.pair.bind(this)
+                name: i.removeHost,
+                callback: this.remove.bind(this)
             })
         }
-
-        elements.push({
-            name: i.removeHost,
-            callback: this.remove.bind(this)
-        })
 
         setContextMenu(event, {
             elements
         })
+    }
+
+    private async manageAccess() {
+        const i = getTranslations(getCurrentLanguage()).host
+        try {
+            const host = await apiGetHost(this.api, { host_id: this.hostId })
+            const input = await showPrompt(i.accessPrompt(host.name), {
+                defaultValue: (host.allowed_users ?? []).join(", "),
+            })
+            if (input == null) {
+                return
+            }
+
+            const allowed_users = input.split(",").map(user => user.trim()).filter(user => user.length > 0)
+            await apiPatchHost(this.api, {
+                host_id: this.hostId,
+                address: null,
+                http_port: null,
+                allowed_users,
+            })
+            showNotification(i.accessUpdated(host.name))
+        } catch (e) {
+            showNotification(describeError(e), "error")
+        }
     }
 
     private async showDetails() {

@@ -1,5 +1,5 @@
 import "./polyfill/index"
-import { Api, getApi, apiPostHost, FetchError, apiGetHost, describeError } from "./api"
+import { Api, getApi, apiPostHost, FetchError, apiGetHost, describeError, apiGetUser, getCurrentUser } from "./api"
 import { AddHostModal } from "./component/host/add_modal"
 import { HostList } from "./component/host/list"
 import { Component, ComponentEvent } from "./component/index"
@@ -35,6 +35,12 @@ async function startApp() {
         if (lastStateText) {
             lastAppState = JSON.parse(lastStateText)
         }
+    }
+
+    try {
+        await apiGetUser(api)
+    } catch (e) {
+        showNotification(describeError(e), "error")
     }
 
     const app = new MainApp(api)
@@ -267,7 +273,7 @@ class MainApp implements Component {
 
         // Unmount the current display
         if (this.currentDisplay == "hosts") {
-            this.actionElement.removeChild(this.hostAddButton)
+            this.hostAddButton.remove()
 
             this.hostList.unmount(this.divElement)
         } else if (this.currentDisplay == "games") {
@@ -281,7 +287,9 @@ class MainApp implements Component {
 
         // Mount the new display
         if (display == "hosts") {
-            this.actionElement.appendChild(this.hostAddButton)
+            if (getCurrentUser().is_admin) {
+                this.actionElement.appendChild(this.hostAddButton)
+            }
 
             this.hostList.mount(this.divElement)
 

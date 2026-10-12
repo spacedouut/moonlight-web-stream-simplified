@@ -236,6 +236,42 @@ Example, adding basic auth to the Apache config above:
 </Location>
 ```
 
+#### Per-user hosts with forward auth
+If your proxy does forward auth (Authelia, Authentik, oauth2-proxy, ...) it can pass the logged-in user name to the relay in a header. Turn that on in `server/config.json`:
+```json
+{
+    "forward_auth": {
+        "enabled": true,
+        "user_header": "Remote-User",
+        "admin_user": "asher"
+    }
+}
+```
+
+- `admin_user` sees every host and is the only one who can add, pair, remove and assign hosts.
+- Everyone else only sees hosts that list them in `allowed_users`. Hidden hosts act like they don't exist, including for streaming.
+- Requests without the header get a 401.
+
+The admin assigns hosts from the host's right-click menu ("Manage Access"), which takes a comma separated list of user names. It ends up in `server/data.json` like this:
+```json
+"allowed_users": ["alice", "bob"]
+```
+
+There's no user database. The relay trusts whatever the header says, so only enable this when the relay is unreachable except through the proxy, and make sure the proxy overwrites (or strips) the header coming from clients.
+
+Caddy example with Authelia:
+```
+moonlight.example.com {
+    forward_auth authelia:9091 {
+        uri /api/authz/forward-auth
+        copy_headers Remote-User
+    }
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+WebTransport runs on its own UDP port that the proxy never sees. With forward auth on, `/api/host/stream/web_transport` (which does go through the proxy) hands out a one-time ticket valid for 60 seconds, and the QUIC session has to present it.
+
 ### Using WebSocket Transport
 
 In some networks (for example, corporate or highly restricted environments), establishing a WebRTC connection can be difficult or may not work at all.
@@ -502,7 +538,7 @@ An existing `server/data.json` (v1, v2 or v3) is migrated automatically on first
 - All hosts (including their pairing) are kept and become visible to everyone.
 - Users, roles, passwords and sessions are dropped. The Moonlight client identity of the first admin user is kept so already paired hosts keep working.
 - The following `config.json` keys were removed and must be deleted: `web_server.session_cookie_secure`, `web_server.session_cookie_expiration`, `web_server.first_login_create_admin`, `web_server.first_login_assign_global_hosts`, `web_server.forwarded_header`.
-- Removed API routes: `/api/login`, `/api/logout`, `/api/authenticate`, `/api/user*`, `/api/role*`, `/api/settings/*`, and the `admin.html` page.
+- Removed API routes: `/api/login`, `/api/logout`, `/api/authenticate`, `/api/role*`, `/api/settings/*`, and the `admin.html` page. `/api/user` now only reports the forward-auth user.
 
 ## Contributors
 Thanks to everyone who contributed to make this software better :).

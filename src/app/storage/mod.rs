@@ -26,6 +26,7 @@ pub struct StorageHost {
     pub http_port: u16,
     pub pair_info: Option<StorageHostPairInfo>,
     pub cache: StorageHostCache,
+    pub allowed_users: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -34,6 +35,7 @@ pub struct StorageHostAdd {
     pub http_port: u16,
     pub pair_info: Option<StorageHostPairInfo>,
     pub cache: StorageHostCache,
+    pub allowed_users: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -56,6 +58,7 @@ pub struct StorageHostModify {
     pub pair_info: Option<Option<StorageHostPairInfo>>,
     pub cache_name: Option<String>,
     pub cache_mac: Option<Option<MacAddress>>,
+    pub allowed_users: Option<Vec<String>>,
 }
 
 #[async_trait]

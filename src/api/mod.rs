@@ -3,7 +3,8 @@ use actix_web::{dev::HttpServiceFactory, services, web};
 use crate::api::{
     app::{get_app_image, get_apps},
     host::{
-        cancel_host, delete_host, get_host, list_hosts, pair_host, patch_host, post_host, wake_host,
+        cancel_host, delete_host, get_host, get_user, list_hosts, pair_host, patch_host, post_host,
+        wake_host,
     },
     stream::{
         web_socket::web_socket_stream,
@@ -21,6 +22,7 @@ pub mod stream;
 
 pub fn api_service() -> impl HttpServiceFactory {
     web::scope("/api")
+        .service(get_user)
         .service(services![
             list_hosts,
             get_host,
