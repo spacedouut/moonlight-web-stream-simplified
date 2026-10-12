@@ -17,6 +17,15 @@ pub struct ConfigJs {
     pub path_prefix: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, TS)]
+#[ts(export, export_to = EXPORT_PATH)]
+pub struct GetUserResponse {
+    /// The forward-auth user name, None when forward auth is off
+    pub name: Option<String>,
+    pub is_admin: bool,
+    pub forward_auth: bool,
+}
+
 #[derive(Serialize, Deserialize, Debug, TS, Clone, Copy)]
 #[ts(export, export_to = EXPORT_PATH)]
 pub enum HostState {
@@ -79,6 +88,8 @@ pub struct DetailedHost {
     pub current_game: u32,
     pub max_luma_pixels_hevc: u32,
     pub server_codec_mode_support: u32,
+    /// Users assigned to this host. Only sent to the forward-auth admin.
+    pub allowed_users: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, TS)]
@@ -137,6 +148,8 @@ pub struct PatchHostRequest {
     pub host_id: u32,
     pub address: Option<String>,
     pub http_port: Option<u16>,
+    /// Forward-auth users that can see this host (admin only)
+    pub allowed_users: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, TS)]
@@ -314,6 +327,8 @@ pub struct WebTransportConfigResponse {
     pub url: Option<String>,
     pub port: u16,
     pub certificate_hash: Option<String>,
+    /// Pass as the `ticket` query parameter when forward auth is on
+    pub ticket: Option<String>,
 }
 
 // Virtual-Key Codes

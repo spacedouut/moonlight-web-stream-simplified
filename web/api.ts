@@ -1,4 +1,4 @@
-import { ApiErrorBody, App, DeleteHostQuery, DetailedHost, GetAppImageQuery, GetAppsQuery, GetAppsResponse, GetHostQuery, GetHostResponse, GetHostsResponse, PostCancelRequest, PostCancelResponse, PostPairRequest, PostPairResponse1, PostPairResponse2, PostWakeUpRequest, PostHostRequest, PostHostResponse, UndetailedHost, PatchHostRequest, WebTransportConfigResponse, } from "./api_bindings"
+import { ApiErrorBody, App, DeleteHostQuery, DetailedHost, GetAppImageQuery, GetAppsQuery, GetAppsResponse, GetHostQuery, GetHostResponse, GetHostsResponse, GetUserResponse, PostCancelRequest, PostCancelResponse, PostPairRequest, PostPairResponse1, PostPairResponse2, PostWakeUpRequest, PostHostRequest, PostHostResponse, UndetailedHost, PatchHostRequest, WebTransportConfigResponse, } from "./api_bindings"
 import { buildUrl } from "./config_"
 import { WebRtcLinkHeader_Tags, webrtcLinkHeaderParse } from "./uniffi/moonlight_common_bindings"
 
@@ -244,6 +244,17 @@ export async function fetchApi(api: Api, endpoint: string, method: string = GET,
 export async function apiGetHosts(api: Api): Promise<StreamedJsonResponse<GetHostsResponse, UndetailedHost>> {
     return await fetchApi<GetHostsResponse, UndetailedHost>(api, "/hosts", GET, { response: "jsonStreaming" })
 }
+let currentUser: GetUserResponse = { name: null, is_admin: true, forward_auth: false }
+
+/// The forward-auth user, as last reported by the relay. Without forward auth everyone can manage hosts.
+export function getCurrentUser(): GetUserResponse {
+    return currentUser
+}
+export async function apiGetUser(api: Api): Promise<GetUserResponse> {
+    currentUser = await fetchApi(api, "/user", GET) as GetUserResponse
+    return currentUser
+}
+
 export async function apiGetHost(api: Api, query: GetHostQuery): Promise<DetailedHost> {
     const response = await fetchApi(api, "/host", GET, { query })
 

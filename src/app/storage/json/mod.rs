@@ -121,6 +121,7 @@ fn host_from_json(host_id: HostId, host: &V4Host) -> StorageHost {
             name: host.cache.name.clone(),
             mac: host.cache.mac,
         },
+        allowed_users: host.allowed_users.clone(),
     }
 }
 
@@ -141,6 +142,7 @@ fn host_to_json(host: StorageHostAdd) -> V4Host {
             name: host.cache.name,
             mac: host.cache.mac,
         },
+        allowed_users: host.allowed_users,
     }
 }
 
@@ -192,6 +194,9 @@ impl Storage for JsonStorage {
         }
         if let Some(mac) = modify.cache_mac {
             host.cache.mac = mac;
+        }
+        if let Some(allowed_users) = modify.allowed_users {
+            host.allowed_users = allowed_users;
         }
         drop(hosts);
         self.force_write();

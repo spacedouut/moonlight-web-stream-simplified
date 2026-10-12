@@ -20,7 +20,7 @@ use moonlight_common::{
 use crate::{
     api::bindings::{self, DetailedHost, HostState, PairStatus, UndetailedHost},
     app::storage::{StorageHost, StorageHostModify, StorageHostPairInfo},
-    app::{AppError, AppInner, AppRef, RequestClient},
+    app::{AppError, AppInner, AppRef, RequestClient, auth::AuthUser},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -171,9 +171,12 @@ impl Host {
         }
     }
 
-    pub async fn detailed_host(&mut self) -> Result<DetailedHost, AppError> {
+    /// `allowed_users` is only filled in for the forward-auth admin.
+    pub async fn detailed_host(&mut self, user: &AuthUser) -> Result<DetailedHost, AppError> {
         let app = self.app.access()?;
         let storage = self.storage_host(&app).await?;
+        let allowed_users =
+            matches!(user, AuthUser::Admin(_)).then(|| storage.allowed_users.clone());
         match self.host_info(&app).await? {
             Some(info) => Ok(DetailedHost {
                 host_id: self.id.0,
@@ -192,6 +195,7 @@ impl Host {
                 current_game: info.current_game,
                 max_luma_pixels_hevc: info.max_luma_pixels_hevc,
                 server_codec_mode_support: info.server_codec_mode_support.bits(),
+                allowed_users,
             }),
             None => Ok(DetailedHost {
                 host_id: self.id.0,
@@ -214,6 +218,7 @@ impl Host {
                 current_game: 0,
                 max_luma_pixels_hevc: 0,
                 server_codec_mode_support: 0,
+                allowed_users,
             }),
         }
     }

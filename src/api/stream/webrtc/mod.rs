@@ -58,8 +58,8 @@ use crate::api::stream::webrtc::convert::into_webrtc_ice_candidate;
 use crate::api::stream::webrtc::ice_servers::generate_ice_servers;
 use crate::app::App;
 use crate::app::AppError;
-use crate::app::host::HostId;
 use crate::app::stream::{ExternalStreamEvent, Stream, StreamId};
+use crate::app::{auth::AuthUser, host::HostId};
 
 mod audio;
 mod control;
@@ -229,6 +229,7 @@ impl PeerConnectionEventHandler for WebRtcHandler {
 #[instrument(skip(app, req, session_description))]
 pub async fn webrtc_post(
     app: Data<App>,
+    user: AuthUser,
     req: HttpRequest,
     session_description: String,
 ) -> Result<HttpResponse, AppError> {
@@ -245,7 +246,7 @@ pub async fn webrtc_post(
     let host_id = HostId(host_id);
 
     // Get host
-    let mut host = app.host(host_id).await?;
+    let mut host = app.host(&user, host_id).await?;
     let host = host.use_host().await?;
 
     if !host.is_paired().await? {
@@ -604,7 +605,7 @@ pub async fn webrtc_post(
 
     // Add stream to the list of streams
     let (event_sender, mut event_receiver) = mpsc::channel(20);
-    let stream = match Stream::new(&app, event_sender).await {
+    let stream = match Stream::new(&app, user, event_sender).await {
         Ok(value) => value,
         Err(err) => {
             // TODO: cleanup the stream
@@ -693,13 +694,14 @@ pub async fn webrtc_post(
 #[patch("/{stream_id}")]
 pub async fn webrtc_patch(
     app: Data<App>,
+    user: AuthUser,
     stream_id: Path<u32>,
     request: HttpRequest,
     body: String,
 ) -> Result<HttpResponse, AppError> {
     let stream_id = StreamId(stream_id.into_inner());
 
-    let stream = app.stream_by_id(stream_id).await?;
+    let stream = app.stream_by_id(&user, stream_id).await?;
 
     match request.headers().get(header::CONTENT_TYPE) {
         Some(x)
@@ -729,10 +731,14 @@ pub async fn webrtc_patch(
 
 #[delete("/{stream_id}")]
 #[instrument(skip(app))]
-pub async fn webrtc_delete(app: Data<App>, stream_id: Path<u32>) -> Result<HttpResponse, AppError> {
+pub async fn webrtc_delete(
+    app: Data<App>,
+    user: AuthUser,
+    stream_id: Path<u32>,
+) -> Result<HttpResponse, AppError> {
     let stream_id = StreamId(stream_id.into_inner());
 
-    let stream = app.stream_by_id(stream_id).await?;
+    let stream = app.stream_by_id(&user, stream_id).await?;
 
     stream.send_event(ExternalStreamEvent::Stop).await?;
 

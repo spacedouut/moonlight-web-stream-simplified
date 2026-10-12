@@ -22,7 +22,11 @@ export type ConfigJs = { path_prefix: string, };
 
 export type DeleteHostQuery = { host_id: number, };
 
-export type DetailedHost = { host_id: number, name: string, paired: PairStatus, server_state: HostState | null, address: string, http_port: number, https_port: number, external_port: number | null, version: string, gfe_version: string, unique_id: string, mac: string | null, local_ip: string, current_game: number, max_luma_pixels_hevc: number, server_codec_mode_support: number, };
+export type DetailedHost = { host_id: number, name: string, paired: PairStatus, server_state: HostState | null, address: string, http_port: number, https_port: number, external_port: number | null, version: string, gfe_version: string, unique_id: string, mac: string | null, local_ip: string, current_game: number, max_luma_pixels_hevc: number, server_codec_mode_support: number, 
+/**
+ * Users assigned to this host. Only sent to the forward-auth admin.
+ */
+allowed_users: Array<string> | null, };
 
 export type GetAppImageQuery = { host_id: number, app_id: number, force_refresh: boolean, };
 
@@ -36,6 +40,12 @@ export type GetHostResponse = { host: DetailedHost, };
 
 export type GetHostsResponse = { hosts: Array<UndetailedHost>, };
 
+export type GetUserResponse = { 
+/**
+ * The forward-auth user name, None when forward auth is off
+ */
+name: string | null, is_admin: boolean, forward_auth: boolean, };
+
 export type HostState = "Free" | "Busy";
 
 export type PairStatus = "NotPaired" | "Paired";
@@ -44,7 +54,11 @@ export type PatchHostRequest = {
 /**
  * The host id of the host to change
  */
-host_id: number, address: string | null, http_port: number | null, };
+host_id: number, address: string | null, http_port: number | null, 
+/**
+ * Forward-auth users that can see this host (admin only)
+ */
+allowed_users: Array<string> | null, };
 
 export type PostCancelRequest = { host_id: number, };
 
@@ -84,7 +98,11 @@ export type WebSocketStreamRequest = { host_id: number, app_id: number, width: n
 
 export type WebSocketStreamResponse = { video_codec: number, audio_sample_rate: number, audio_channel_count: number, audio_streams: number, audio_coupled_streams: number, audio_samples_per_frame: number, audio_mapping: [number, number, number, number, number, number, number, number], app_name: string | null, };
 
-export type WebTransportConfigResponse = { url: string | null, port: number, certificate_hash: string | null, };
+export type WebTransportConfigResponse = { url: string | null, port: number, certificate_hash: string | null, 
+/**
+ * Pass as the `ticket` query parameter when forward auth is on
+ */
+ticket: string | null, };
 
 export const WebSocketChannel = { CONTROL: 0, VIDEO: 1, AUDIO: 2, PING: 3, };
 

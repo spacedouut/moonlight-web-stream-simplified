@@ -57,7 +57,7 @@ use crate::{
         },
         stream::{create_control_packet_config, start_moonlight_stream},
     },
-    app::{App, AppError},
+    app::{App, AppError, auth::AuthUser},
     config::WebTransportConfig,
 };
 
@@ -84,6 +84,7 @@ enum Incoming {
 #[instrument(skip(app))]
 pub async fn web_transport_config(
     app: Data<App>,
+    user: AuthUser,
 ) -> Result<Json<WebTransportConfigResponse>, AppError> {
     let Some(config) = app.config().web_server.web_transport.as_ref() else {
         return Err(AppError::WebTransportDisabled);
@@ -102,10 +103,16 @@ pub async fn web_transport_config(
     } else {
         None
     };
+    let ticket = if app.config().forward_auth.enabled {
+        Some(app.issue_web_transport_ticket(user).await?)
+    } else {
+        None
+    };
     Ok(Json(WebTransportConfigResponse {
         url: config.public_url.as_ref().map(|url| format!("{url}{path}")),
         port: config.bind_address.port(),
         certificate_hash,
+        ticket,
     }))
 }
 
@@ -166,10 +173,27 @@ pub fn spawn_web_transport_server(
             tokio::spawn(
                 async move {
                     match incoming.await {
-                        Ok(session_request) if session_request.path() == path => {
+                        Ok(session_request) if path_matches(session_request.path(), &path) => {
+                            // The forward-auth proxy isn't in front of this endpoint, so the
+                            // user comes from a ticket minted by the (proxied) config endpoint.
+                            let user = if app.config().forward_auth.enabled {
+                                let ticket = query_param(session_request.path(), "ticket");
+                                let user = match ticket {
+                                    Some(ticket) => app.redeem_web_transport_ticket(ticket).await,
+                                    None => None,
+                                };
+                                let Some(user) = user else {
+                                    warn!("web transport session without a valid ticket");
+                                    session_request.forbidden().await;
+                                    return;
+                                };
+                                user
+                            } else {
+                                AuthUser::Unrestricted
+                            };
                             match session_request.accept().await {
                                 Ok(connection) => {
-                                    if let Err(err) = handle_session(app, connection).await {
+                                    if let Err(err) = handle_session(app, user, connection).await {
                                         error!(error = %err, "web transport session failed");
                                     }
                                 }
@@ -187,7 +211,27 @@ pub fn spawn_web_transport_server(
     Ok(())
 }
 
-async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), AppError> {
+fn path_matches(request_path: &str, path: &str) -> bool {
+    request_path
+        .split_once('?')
+        .map_or(request_path, |(path, _)| path)
+        == path
+}
+
+fn query_param<'a>(request_path: &'a str, name: &str) -> Option<&'a str> {
+    let (_, query) = request_path.split_once('?')?;
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| value)
+}
+
+async fn handle_session(
+    app: Data<App>,
+    user: AuthUser,
+    connection: Connection,
+) -> Result<(), AppError> {
     let (mut message_send, mut message_recv) =
         timeout(Duration::from_secs(10), connection.accept_bi())
             .await
@@ -206,7 +250,7 @@ async fn handle_session(app: Data<App>, connection: Connection) -> Result<(), Ap
     let WebSocketServerboundMessage::Request(request) = request else {
         return Err(AppError::StreamClosed);
     };
-    let (stream, response) = match start_moonlight_stream(&app, &request).await {
+    let (stream, response) = match start_moonlight_stream(&app, &user, &request).await {
         Ok(value) => value,
         Err(err) => {
             // Tell the client why the stream couldn't be started before

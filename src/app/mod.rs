@@ -3,7 +3,7 @@ use std::{
     io,
     ops::Deref,
     sync::{Arc, Weak},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use actix_web::{HttpResponse, ResponseError, body::BoxBody, http::StatusCode};
@@ -30,6 +30,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::{
     app::{
+        auth::AuthUser,
         host::{AppId, Host, HostId},
         storage::{Storage, StorageHostAdd, StorageHostCache, create_storage},
         stream::{Stream, StreamId},
@@ -37,6 +38,7 @@ use crate::{
     config::Config,
 };
 
+pub mod auth;
 pub mod host;
 pub mod storage;
 pub mod stream;
@@ -57,6 +59,10 @@ pub enum AppError {
     StreamClosed,
     #[error("web transport is disabled")]
     WebTransportDisabled,
+    #[error("no forward-auth user on the request")]
+    Unauthenticated,
+    #[error("only the admin can do this")]
+    AdminOnly,
     #[error("the host doesn't support the given config: {0}")]
     StreamConfig(#[from] StreamConfigError),
     #[error("failed to parse the given sdp: {0}")]
@@ -267,6 +273,16 @@ impl AppError {
                 code: "transport_disabled",
                 message: "The relay isn't exposing WebTransport. It may be disabled in the relay config.".into(),
             },
+            Self::Unauthenticated => ErrorDescription {
+                status: StatusCode::UNAUTHORIZED,
+                code: "unauthenticated",
+                message: "The relay expects a signed-in user from its forward-auth proxy but the request had none. Check the proxy's auth setup.".into(),
+            },
+            Self::AdminOnly => ErrorDescription {
+                status: StatusCode::FORBIDDEN,
+                code: "admin_only",
+                message: "Only the relay admin can do this.".into(),
+            },
             Self::StreamConfig(config_err) => ErrorDescription {
                 status: StatusCode::BAD_REQUEST,
                 code: "unsupported_stream_config",
@@ -330,7 +346,11 @@ pub(crate) struct AppInner {
     pub(crate) streams: RwLock<HashMap<StreamId, Stream>>,
     pub(crate) ice_server_script_cache:
         Mutex<Option<(Instant, Vec<crate::api::bindings::RtcIceServer>)>>,
+    pub(crate) web_transport_tickets: Mutex<HashMap<String, (AuthUser, Instant)>>,
 }
+
+/// How long a WebTransport ticket from `GET /api/host/stream/web_transport` stays valid.
+const WEB_TRANSPORT_TICKET_TTL: Duration = Duration::from_secs(60);
 
 pub type RequestClient = TokioHyperClient;
 
@@ -348,6 +368,7 @@ impl App {
                 app_image_cache: Default::default(),
                 streams: Default::default(),
                 ice_server_script_cache: Default::default(),
+                web_transport_tickets: Default::default(),
             }),
         })
     }
@@ -366,13 +387,15 @@ impl App {
         self.inner.storage.client_unique_id().await
     }
 
-    pub async fn hosts(&self) -> Result<Vec<Host>, AppError> {
+    /// Hosts `user` is allowed to see.
+    pub async fn hosts(&self, user: &AuthUser) -> Result<Vec<Host>, AppError> {
         Ok(self
             .inner
             .storage
             .list_hosts()
             .await?
             .into_iter()
+            .filter(|host| user.can_access(&host.allowed_users))
             .map(|host| Host {
                 app: self.new_ref(),
                 id: host.id,
@@ -382,8 +405,12 @@ impl App {
             .collect())
     }
 
-    pub async fn host(&self, host_id: HostId) -> Result<Host, AppError> {
+    /// A host `user` is allowed to see. Hidden hosts look like missing ones.
+    pub async fn host(&self, user: &AuthUser, host_id: HostId) -> Result<Host, AppError> {
         let host = self.inner.storage.get_host(host_id).await?;
+        if !user.can_access(&host.allowed_users) {
+            return Err(AppError::HostNotFound);
+        }
         Ok(Host {
             app: self.new_ref(),
             id: host.id,
@@ -422,6 +449,7 @@ impl App {
                     name: info.host_name,
                     mac: info.mac,
                 },
+                allowed_users: Vec::new(),
             })
             .await?;
         Ok(Host {
@@ -455,13 +483,37 @@ impl App {
         Ok(stream)
     }
 
-    pub async fn stream_by_id(&self, id: StreamId) -> Result<Stream, AppError> {
+    /// A stream `user` started (the admin can reach every stream).
+    pub async fn stream_by_id(&self, user: &AuthUser, id: StreamId) -> Result<Stream, AppError> {
         self.inner
             .streams
             .read()
             .await
             .get(&id)
+            .filter(|stream| user.is_admin() || stream.owner() == user)
             .cloned()
             .ok_or(AppError::StreamClosed)
+    }
+
+    /// One-shot ticket that carries `user` over to the WebTransport endpoint,
+    /// which the forward-auth proxy doesn't sit in front of.
+    pub async fn issue_web_transport_ticket(&self, user: AuthUser) -> Result<String, AppError> {
+        let mut bytes = [0; 16];
+        RustCryptoBackend.random_bytes(&mut bytes)?;
+        let ticket = hex::encode(bytes);
+        let mut tickets = self.inner.web_transport_tickets.lock().await;
+        tickets.retain(|_, (_, issued)| issued.elapsed() < WEB_TRANSPORT_TICKET_TTL);
+        tickets.insert(ticket.clone(), (user, Instant::now()));
+        Ok(ticket)
+    }
+
+    pub async fn redeem_web_transport_ticket(&self, ticket: &str) -> Option<AuthUser> {
+        let (user, issued) = self
+            .inner
+            .web_transport_tickets
+            .lock()
+            .await
+            .remove(ticket)?;
+        (issued.elapsed() < WEB_TRANSPORT_TICKET_TTL).then_some(user)
     }
 }

@@ -27,7 +27,7 @@ use tracing::{Instrument, debug, debug_span, error, info, instrument, trace, war
 
 use crate::{
     api::stream::{create_control_packet_config, start_moonlight_stream},
-    app::{App, AppError},
+    app::{App, AppError, auth::AuthUser},
 };
 
 enum WsData {
@@ -39,6 +39,7 @@ enum WsData {
 #[instrument(skip(app, req, body_stream))]
 pub async fn web_socket_stream(
     app: actix_web::web::Data<App>,
+    user: AuthUser,
     req: HttpRequest,
     body_stream: Payload,
 ) -> Result<HttpResponse, Error> {
@@ -47,7 +48,7 @@ pub async fn web_socket_stream(
 
     spawn(
         async move {
-            match handle_ws(app, ws_sender, ws_receiver).await {
+            match handle_ws(app, user, ws_sender, ws_receiver).await {
                 Ok(_) => {}
                 Err(err) => {
                     error!(error = %err, "stream failed");
@@ -62,6 +63,7 @@ pub async fn web_socket_stream(
 
 async fn handle_ws(
     app: actix_web::web::Data<App>,
+    user: AuthUser,
     mut ws_sender: Session,
     mut ws_receiver: MessageStream,
 ) -> Result<(), AppError> {
@@ -100,7 +102,8 @@ async fn handle_ws(
         }
     };
 
-    let (stream, stream_response) = match start_moonlight_stream(&app, &stream_request).await {
+    let (stream, stream_response) = match start_moonlight_stream(&app, &user, &stream_request).await
+    {
         Ok(value) => value,
         Err(err) => {
             // Tell the client why the stream couldn't be started before

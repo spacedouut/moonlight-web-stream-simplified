@@ -22,6 +22,38 @@ pub struct Config {
     pub moonlight: MoonlightConfig,
     #[serde(default)]
     pub log: LogConfig,
+    #[serde(default)]
+    pub forward_auth: ForwardAuthConfig,
+}
+
+// -- Forward Auth
+
+/// Trust a user name header set by an authenticating reverse proxy
+/// (Authelia, Authentik, Caddy `forward_auth`, ...).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForwardAuthConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Request header carrying the signed-in user name.
+    #[serde(default = "default_forward_auth_user_header")]
+    pub user_header: String,
+    /// This user sees every host and assigns hosts to other users.
+    #[serde(default)]
+    pub admin_user: Option<String>,
+}
+
+impl Default for ForwardAuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            user_header: default_forward_auth_user_header(),
+            admin_user: None,
+        }
+    }
+}
+
+fn default_forward_auth_user_header() -> String {
+    "Remote-User".to_string()
 }
 
 // -- Log

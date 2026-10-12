@@ -9,6 +9,7 @@ use crate::{
     api::bindings::{self, GetAppImageQuery, GetAppsQuery, GetAppsResponse},
     app::{
         App, AppError,
+        auth::AuthUser,
         host::{AppId, HostId},
     },
 };
@@ -16,9 +17,14 @@ use crate::{
 #[get("/apps")]
 async fn get_apps(
     app: Data<App>,
+    user: AuthUser,
     Query(query): Query<GetAppsQuery>,
 ) -> Result<actix_web::web::Json<GetAppsResponse>, AppError> {
-    let apps = app.host(HostId(query.host_id)).await?.list_apps().await?;
+    let apps = app
+        .host(&user, HostId(query.host_id))
+        .await?
+        .list_apps()
+        .await?;
     Ok(actix_web::web::Json(GetAppsResponse {
         apps: apps.into_iter().map(bindings::App::from).collect(),
     }))
@@ -27,11 +33,12 @@ async fn get_apps(
 #[get("/app/image")]
 async fn get_app_image(
     app: Data<App>,
+    user: AuthUser,
     Query(query): Query<GetAppImageQuery>,
     req: HttpRequest,
 ) -> Result<HttpResponse, AppError> {
     let image = app
-        .host(HostId(query.host_id))
+        .host(&user, HostId(query.host_id))
         .await?
         .app_image(AppId(query.app_id), query.force_refresh)
         .await?;

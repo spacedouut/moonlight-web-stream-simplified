@@ -37,6 +37,9 @@ pub struct V4Host {
     pub http_port: u16,
     pub pair_info: Option<V2HostPairInfo>,
     pub cache: V2HostCache,
+    /// Forward-auth users (besides the admin) that can see this host.
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
 }
 
 // -- V1
@@ -321,6 +324,7 @@ pub fn migrate_v3_to_v4(old: V3) -> Result<V4, anyhow::Error> {
                         http_port: host.http_port,
                         pair_info: host.pair_info,
                         cache: host.cache,
+                        allowed_users: Vec::new(),
                     },
                 )
             })

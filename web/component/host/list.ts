@@ -1,5 +1,5 @@
 import { DetailedHost, UndetailedHost } from "../../api_bindings"
-import { Api, apiGetHosts } from "../../api"
+import { Api, apiGetHosts, getCurrentUser } from "../../api"
 import { ComponentEvent } from "../index"
 import { Host, HostEventListener } from "./index"
 import { FetchListComponent } from "../fetch_list"
@@ -19,7 +19,8 @@ export class HostList extends FetchListComponent<DetailedHost | UndetailedHost, 
 
         this.api = api
         this.emptyHint.classList.add("host-empty-hint")
-        this.emptyHint.innerText = getTranslations(getCurrentLanguage()).host.empty
+        const i = getTranslations(getCurrentLanguage()).host
+        this.emptyHint.innerText = getCurrentUser().is_admin ? i.empty : i.emptyNotAssigned
     }
 
     // The initial /hosts response only carries cached state; until each host's

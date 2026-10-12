@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::{
     api::bindings::{WebSocketStreamRequest, WebSocketStreamResponse},
-    app::{App, AppError, host::HostId},
+    app::{App, AppError, auth::AuthUser, host::HostId},
 };
 use moonlight_common::{
     AppId,
@@ -28,10 +28,11 @@ use tracing::info;
 
 pub async fn start_moonlight_stream(
     app: &App,
+    user: &AuthUser,
     request: &WebSocketStreamRequest,
 ) -> Result<(MoonlightStream, WebSocketStreamResponse), AppError> {
     let host_id = HostId(request.host_id);
-    let mut host = app.host(host_id).await?;
+    let mut host = app.host(user, host_id).await?;
     let host = host.use_host().await?;
 
     if !host.is_paired().await.map_err(AppError::from)? {

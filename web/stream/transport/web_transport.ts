@@ -49,7 +49,10 @@ export class WebTransportTransport implements Transport {
     constructor(api: Api, config: WebTransportConfigResponse, logger?: Logger) {
         this.logger = logger
         const apiPath = new URL(api.host_url).pathname
-        const url = config.url ?? `https://${location.hostname}:${config.port}${apiPath}/host/stream/web_transport`
+        let url = config.url ?? `https://${location.hostname}:${config.port}${apiPath}/host/stream/web_transport`
+        if (config.ticket) {
+            url += `?ticket=${encodeURIComponent(config.ticket)}`
+        }
         const options = config.certificate_hash ? {
             serverCertificateHashes: [{ algorithm: "sha-256" as const, value: hexToArrayBuffer(config.certificate_hash) }]
         } : undefined

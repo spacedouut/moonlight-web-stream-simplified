@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::{spawn, sync::mpsc::Sender, time::sleep};
 use tracing::{debug, warn};
 
-use crate::app::{App, AppError};
+use crate::app::{App, AppError, auth::AuthUser};
 
 pub enum ExternalStreamEvent {
     WebRTCAddIceCandidate { ice_sdp_frag: String },
@@ -21,6 +21,7 @@ pub struct Stream {
 impl Stream {
     pub async fn new(
         app: &App,
+        owner: AuthUser,
         event_sender: Sender<ExternalStreamEvent>,
     ) -> Result<Self, AppError> {
         app.insert_stream(|id| {
@@ -46,12 +47,16 @@ impl Stream {
                     }
                 }
             });
-            Self { inner: Arc::new(StreamInner { id, event_sender }) }
+            Self { inner: Arc::new(StreamInner { id, owner, event_sender }) }
         }).await
     }
 
     pub fn id(&self) -> StreamId {
         self.inner.id
+    }
+
+    pub fn owner(&self) -> &AuthUser {
+        &self.inner.owner
     }
 
     pub async fn send_event(&self, event: ExternalStreamEvent) -> Result<(), AppError> {
@@ -70,5 +75,6 @@ impl Stream {
 
 pub(crate) struct StreamInner {
     pub(crate) id: StreamId,
+    pub(crate) owner: AuthUser,
     pub(crate) event_sender: Sender<ExternalStreamEvent>,
 }
