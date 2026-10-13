@@ -139,13 +139,37 @@ export class StreamInput {
 
         const text = data.getData("text/plain")
         if (text) {
-            console.debug("PASTE TEXT", text)
-
-            // Before sending text raise all keys
-            this.raiseAllKeys()
-
-            this.sendText(text)
+            this.pasteText(text)
         }
+    }
+    async pasteFromClipboard() {
+        this.raiseAllKeys()
+
+        if (!navigator.clipboard?.readText) {
+            console.warn("Clipboard API unavailable, can't paste")
+            return
+        }
+
+        let text
+        try {
+            text = await navigator.clipboard.readText()
+        } catch (err) {
+            console.warn("Failed to read clipboard", err)
+            return
+        }
+
+        if (text) {
+            this.pasteText(text)
+        }
+    }
+    private pasteText(text: string) {
+        console.debug("PASTE TEXT", text)
+
+        // Before sending text raise all keys
+        this.raiseAllKeys()
+
+        // Sending both CR and LF types two newlines on the host
+        this.sendText(text.replace(/\r\n/g, "\n"))
     }
 
     private sendKeyEvent(isDown: boolean, event: KeyboardEvent) {
