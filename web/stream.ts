@@ -412,8 +412,10 @@ class ViewerApp implements Component {
         this.onUserInteraction()
 
         console.debug(event)
-        if (event.shiftKey && event.ctrlKey && event.code == "KeyV") {
-            // We are likely pasting -> don't send keys
+        if (event.ctrlKey && event.altKey && event.shiftKey && event.code == "KeyV") {
+            // Same paste combo as moonlight-qt, so Ctrl+Shift+V still reaches the host
+            event.preventDefault()
+            this.stream.getInput().pasteFromClipboard()
         } else if (event.code == "F11") {
             // Allow manual fullscreen
         } else {
