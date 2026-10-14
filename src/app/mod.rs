@@ -29,6 +29,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::{
+    api::stream::web_transport::AutoCertificate,
     app::{
         auth::AuthUser,
         host::{AppId, Host, HostId},
@@ -347,6 +348,7 @@ pub(crate) struct AppInner {
     pub(crate) ice_server_script_cache:
         Mutex<Option<(Instant, Vec<crate::api::bindings::RtcIceServer>)>>,
     pub(crate) web_transport_tickets: Mutex<HashMap<String, (AuthUser, Instant)>>,
+    pub(crate) web_transport_certificate: Option<Arc<AutoCertificate>>,
 }
 
 /// How long a WebTransport ticket from `GET /api/host/stream/web_transport` stays valid.
@@ -361,6 +363,14 @@ pub struct App {
 
 impl App {
     pub async fn new(config: Config) -> Result<Self, anyhow::Error> {
+        let web_transport_certificate = config
+            .web_server
+            .web_transport
+            .as_ref()
+            .filter(|web_transport| web_transport.auto_certificate)
+            .map(AutoCertificate::start)
+            .transpose()?;
+
         Ok(Self {
             inner: Arc::new(AppInner {
                 storage: create_storage(config.data_storage.clone()).await?,
@@ -369,6 +379,7 @@ impl App {
                 streams: Default::default(),
                 ice_server_script_cache: Default::default(),
                 web_transport_tickets: Default::default(),
+                web_transport_certificate,
             }),
         })
     }
@@ -381,6 +392,10 @@ impl App {
 
     pub fn config(&self) -> &Config {
         &self.inner.config
+    }
+
+    pub fn web_transport_certificate(&self) -> Option<&Arc<AutoCertificate>> {
+        self.inner.web_transport_certificate.as_ref()
     }
 
     pub async fn client_unique_id(&self) -> Result<String, AppError> {
