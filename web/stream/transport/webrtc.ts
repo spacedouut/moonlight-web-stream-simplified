@@ -366,6 +366,10 @@ export class WebRTCTransport implements Transport {
     // Video
     private videoStream: MediaStreamTrack | null = null
 
+    setVideoPaused(_paused: boolean): void {
+        // Video arrives as a MediaStreamTrack; the browser already handles hidden tabs.
+    }
+
     setVideoPipeline(type: "videotrack", pipeline: (TrackVideoRenderer & VideoRenderer)): Promise<void>;
     setVideoPipeline(type: "data", pipeline: (DataPipe & VideoRenderer)): Promise<void>;
     async setVideoPipeline(type: TransportVideoType, pipeline: unknown): Promise<void> {

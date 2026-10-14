@@ -53,6 +53,9 @@ export interface Transport {
     setVideoPipeline(type: "videotrack", pipeline: (TrackVideoRenderer & VideoRenderer)): Promise<void>
     setVideoPipeline(type: "data", pipeline: (DataPipe & VideoRenderer)): Promise<void>
 
+    /** Stop feeding video to the decoder (e.g. while the tab is hidden). Resuming requests an idr. */
+    setVideoPaused(paused: boolean): void
+
     setAudioPipeline(type: "audiotrack", pipeline: (TrackAudioPlayer & AudioPlayer)): Promise<void>
     setAudioPipeline(type: "data", pipeline: (DataPipe & AudioPlayer)): Promise<void>
 
@@ -74,6 +77,47 @@ export function generateControlPacketConfig(): ControlPacketConfig {
     config.webState = 0x7001;
 
     return config
+}
+
+/**
+ * Drops video packets while paused and, after resuming, until the next key frame.
+ * Used by the data transports so a hidden tab doesn't keep a stalled decoder busy.
+ */
+export class VideoGate {
+    private paused = false
+    private awaitingKeyFrame = false
+
+    get isPaused(): boolean {
+        return this.paused
+    }
+
+    pause(): void {
+        this.paused = true
+    }
+
+    /** Returns true if an idr should be requested from the host. */
+    resume(): boolean {
+        if (!this.paused) {
+            return false
+        }
+        this.paused = false
+        this.awaitingKeyFrame = true
+        return true
+    }
+
+    /** `payload` is the video channel payload; its first byte is the key frame flag. */
+    accept(payload: Uint8Array): boolean {
+        if (this.paused) {
+            return false
+        }
+        if (this.awaitingKeyFrame) {
+            if (payload[0] == 0) {
+                return false
+            }
+            this.awaitingKeyFrame = false
+        }
+        return true
+    }
 }
 
 export interface IControlStream {
