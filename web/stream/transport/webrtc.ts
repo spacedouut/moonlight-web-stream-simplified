@@ -214,8 +214,12 @@ export class WebRTCTransport implements Transport {
             }
 
             // Only a stream that is still receiving packets is a dead decoder;
-            // no packets at all is a legitimate quiet period.
-            if (packetsReceived > this.lastStallPacketsReceived && framesDecoded <= this.lastStallFramesDecoded) {
+            // no packets at all is a legitimate quiet period, and a hidden tab
+            // legitimately stops decoding.
+            const hidden = typeof document != "undefined" && document.visibilityState != "visible"
+            if (hidden) {
+                this.stallTicks = 0
+            } else if (packetsReceived > this.lastStallPacketsReceived && framesDecoded <= this.lastStallFramesDecoded) {
                 this.stallTicks++
                 const timeoutTicks = framesDecoded == 0 ? FIRST_FRAME_TIMEOUT_TICKS : DECODE_STALL_TIMEOUT_TICKS
                 if (this.stallTicks >= timeoutTicks) {

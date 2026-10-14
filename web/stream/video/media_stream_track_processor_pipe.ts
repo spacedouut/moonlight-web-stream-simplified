@@ -29,6 +29,7 @@ export class VideoMediaStreamTrackProcessorPipe implements TrackVideoRenderer {
     private running: boolean = false
     private newProcessor: boolean = false
     private trackProcessor: MediaStreamTrackProcessor | null = null
+    private reader: ReadableStreamDefaultReader<VideoFrame> | null = null
 
     private base: FrameVideoRenderer
 
@@ -45,12 +46,11 @@ export class VideoMediaStreamTrackProcessorPipe implements TrackVideoRenderer {
     }
 
     private async readTrack() {
-        let reader: ReadableStreamDefaultReader<VideoFrame> | null = null
-
         while (this.running) {
-            if (!reader || this.newProcessor) {
+            if (!this.reader || this.newProcessor) {
                 this.newProcessor = false
 
+                this.releaseReader()
                 if (this.trackProcessor?.readable.locked) {
                     // Shouldn't happen
                     throw "Canvas video track processor is locked"
@@ -58,20 +58,35 @@ export class VideoMediaStreamTrackProcessorPipe implements TrackVideoRenderer {
 
                 const newReader = this.trackProcessor?.readable.getReader()
                 if (newReader) {
-                    reader = newReader
+                    this.reader = newReader
                 }
                 await wait(100)
                 continue
             }
 
             // TODO: byob?
-            const { done, value } = await reader.read()
-            if (done) {
-                console.error("Track Processor is done!")
+            let result
+            try {
+                result = await this.reader.read()
+            } catch (e) {
+                if (!this.running) return
+                throw e
+            }
+            if (result.done) {
+                if (this.running) console.error("Track Processor is done!")
                 return
             }
 
-            this.base.submitFrame(value)
+            this.base.submitFrame(result.value)
+        }
+    }
+
+    /** The readable can't be cancelled while a reader holds it, so cancel through the reader. */
+    private releaseReader() {
+        const reader = this.reader
+        this.reader = null
+        if (reader) {
+            reader.cancel().catch(e => console.error(e))
         }
     }
 
@@ -85,12 +100,9 @@ export class VideoMediaStreamTrackProcessorPipe implements TrackVideoRenderer {
     }
     cleanup() {
         this.running = false
-        try {
-            if (this.trackProcessor) {
-                this.trackProcessor.readable.cancel()
-            }
-        } catch (e) {
-            console.error(e)
+        this.releaseReader()
+        if (this.trackProcessor && !this.trackProcessor.readable.locked) {
+            this.trackProcessor.readable.cancel().catch(e => console.error(e))
         }
         this.trackProcessor = null
 
