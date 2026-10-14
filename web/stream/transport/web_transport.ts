@@ -159,12 +159,8 @@ export class WebTransportTransport implements Transport {
                     await dispatchPromise
                     return
                 }
-                if (this.videoGate.isPaused) {
-                    void streamResult.value.cancel().catch(() => { })
-                    continue
-                }
                 while (pending.length >= 64) await pending[0]
-                pending.push(this.readAll(streamResult.value))
+                pending.push(this.readAll(streamResult.value, this.videoGate.isPaused))
                 notifyDispatcher()
             }
         } catch {
@@ -173,14 +169,19 @@ export class WebTransportTransport implements Transport {
         }
     }
 
-    private async readAll(readable: ReadableStream<Uint8Array>): Promise<Uint8Array<ArrayBuffer> | null> {
+    /** With `skipVideo`, video streams are cancelled after their first chunk (audio may also arrive on unidirectional streams). */
+    private async readAll(readable: ReadableStream<Uint8Array>, skipVideo = false): Promise<Uint8Array<ArrayBuffer> | null> {
         const reader = readable.getReader()
         let timeoutId: number | null = null
-        const read = async(): Promise<Uint8Array<ArrayBuffer>> => {
+        const read = async(): Promise<Uint8Array<ArrayBuffer> | null> => {
             const chunks: Uint8Array[] = []
             while (true) {
                 const result = await reader.read()
                 if (result.done) break
+                if (skipVideo && chunks.length == 0 && result.value[0] == WebSocketChannel.VIDEO) {
+                    await reader.cancel()
+                    return null
+                }
                 chunks.push(result.value)
             }
             const total = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.length, 0))
