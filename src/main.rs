@@ -1,5 +1,4 @@
 use crate::{cli::ConfigCommand, config::Config};
-use mimalloc::MiMalloc;
 use rustls::{
     ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
@@ -48,8 +47,9 @@ mod cli;
 mod config;
 mod human_json;
 
+#[cfg(not(windows))]
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[actix_web::main]
 async fn main() {
