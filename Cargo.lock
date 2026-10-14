@@ -1489,7 +1489,7 @@ dependencies = [
  "hyper",
  "libc",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tokio",
  "tower-service",
  "tracing",
@@ -2292,7 +2292,7 @@ dependencies = [
  "quinn-udp 0.5.15",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2330,7 +2330,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -2344,7 +2344,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "log",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "windows-sys 0.61.2",
 ]
 
@@ -3875,8 +3875,7 @@ dependencies = [
 [[package]]
 name = "webrtc"
 version = "0.21.0-rc.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f37390d45976b52f331e1c0b64aebad5111cf197dcafad5320dc3362b6dfd45f"
+source = "git+https://github.com/spacedouut/webrtc?rev=23fb1ab8d6d0bee882f05fc139eaae9ef00d76c6#23fb1ab8d6d0bee882f05fc139eaae9ef00d76c6"
 dependencies = [
  "async-broadcast",
  "async-channel",

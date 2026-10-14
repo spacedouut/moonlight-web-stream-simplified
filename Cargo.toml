@@ -70,3 +70,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
 too_many_arguments = "allow"
 unwrap_used = "warn"
 todo = "warn"
+
+[patch.crates-io]
+# Fork of 0.21.0-rc.2 whose driver drains queued SenderRtp events in a burst, so a
+# frame's RTP packets get flushed together (GSO) instead of one loop round + sendto each.
+webrtc = { git = "https://github.com/spacedouut/webrtc", rev = "23fb1ab8d6d0bee882f05fc139eaae9ef00d76c6" }
