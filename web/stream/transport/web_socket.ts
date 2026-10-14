@@ -8,7 +8,7 @@ import { DataPipe } from "../pipeline/pipes"
 import { StatValue } from "../stats"
 import { createSupportedVideoFormatsBits, getSelectedVideoCodec } from "../video"
 import { TrackVideoRenderer, VideoRenderer } from "../video/index"
-import { generateControlPacketConfig, IControlStream, Transport, TransportAudioType, TransportConnectData, TransportOptions, TransportShutdown, TransportVideoType } from "./index"
+import { generateControlPacketConfig, IControlStream, Transport, TransportAudioType, TransportConnectData, TransportOptions, TransportShutdown, TransportVideoType, VideoGate } from "./index"
 
 export class WebSocketTransport implements Transport {
     readonly implementationName: string = "web_socket"
@@ -129,6 +129,9 @@ export class WebSocketTransport implements Transport {
             if (channel == WebSocketChannel.CONTROL) {
                 this.controlStream.onRawPacket(view.subarray(1))
             } else if (channel == WebSocketChannel.VIDEO) {
+                if (!this.videoGate.accept(view.subarray(1))) {
+                    return
+                }
                 this.videoPipeline?.submitPacket(view.subarray(1))
                 if (this.videoPipeline && "pollRequestIdr" in this.videoPipeline && typeof this.videoPipeline.pollRequestIdr == "function" && this.videoPipeline.pollRequestIdr()) {
                     this.logger?.debug("requesting idr")
@@ -175,6 +178,15 @@ export class WebSocketTransport implements Transport {
     }
 
     private videoPipeline: DataPipe | null = null
+    private videoGate = new VideoGate()
+
+    setVideoPaused(paused: boolean): void {
+        if (paused) {
+            this.videoGate.pause()
+        } else if (this.videoGate.resume()) {
+            this.controlStream.sendRaw(new ControlPacket.RequestIdr())
+        }
+    }
 
     setVideoPipeline(type: "videotrack", pipeline: (TrackVideoRenderer & VideoRenderer)): Promise<void>
     setVideoPipeline(type: "data", pipeline: (DataPipe & VideoRenderer)): Promise<void>

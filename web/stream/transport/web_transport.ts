@@ -8,7 +8,7 @@ import { DataPipe } from "../pipeline/pipes"
 import { StatValue } from "../stats"
 import { createSupportedVideoFormatsBits, getSelectedVideoCodec } from "../video"
 import { VideoRenderer, TrackVideoRenderer } from "../video/index"
-import { generateControlPacketConfig, IControlStream, Transport, TransportAudioType, TransportConnectData, TransportOptions, TransportShutdown, TransportVideoType } from "./index"
+import { generateControlPacketConfig, IControlStream, Transport, TransportAudioType, TransportConnectData, TransportOptions, TransportShutdown, TransportVideoType, VideoGate } from "./index"
 
 const PING_DATAGRAM_LENGTH = 5
 const PING_TIMEOUT_MS = 1000
@@ -159,6 +159,10 @@ export class WebTransportTransport implements Transport {
                     await dispatchPromise
                     return
                 }
+                if (this.videoGate.isPaused) {
+                    void streamResult.value.cancel().catch(() => { })
+                    continue
+                }
                 while (pending.length >= 64) await pending[0]
                 pending.push(this.readAll(streamResult.value))
                 notifyDispatcher()
@@ -243,6 +247,9 @@ export class WebTransportTransport implements Transport {
         if (channel == WebSocketChannel.CONTROL) this.controlStream.onRawPacket(data.subarray(1))
         else if (channel == WebSocketChannel.PING) this.onPingDatagram(data)
         else if (channel == WebSocketChannel.VIDEO) {
+            if (!this.videoGate.accept(data.subarray(1))) {
+                return
+            }
             this.videoPipeline?.submitPacket(data.subarray(1))
             if (this.videoPipeline && "pollRequestIdr" in this.videoPipeline && typeof this.videoPipeline.pollRequestIdr == "function" && this.videoPipeline.pollRequestIdr()) {
                 this.controlStream.sendRaw(new ControlPacket.RequestIdr())
@@ -264,6 +271,16 @@ export class WebTransportTransport implements Transport {
                 preferred_codecs: options.preferredCodecs ? createSupportedVideoFormatsBits(options.preferredCodecs) : 0,
             }
         })
+    }
+
+    private videoGate = new VideoGate()
+
+    setVideoPaused(paused: boolean): void {
+        if (paused) {
+            this.videoGate.pause()
+        } else if (this.videoGate.resume()) {
+            this.controlStream.sendRaw(new ControlPacket.RequestIdr())
+        }
     }
 
     setVideoPipeline(type: "videotrack", pipeline: (TrackVideoRenderer & VideoRenderer)): Promise<void>

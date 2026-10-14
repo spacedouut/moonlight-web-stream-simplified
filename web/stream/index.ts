@@ -602,6 +602,7 @@ export class Stream implements Component {
     }
 
     onVisibilityChanged(visible: boolean) {
+        this.transport?.setVideoPaused(!visible)
         if (visible) {
             this.updateWakeLock()
         }
