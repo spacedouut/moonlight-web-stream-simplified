@@ -236,6 +236,7 @@ export class Stream implements Component {
         this.debugLog("Setting new transport")
 
         this.transport = transport
+        this.transport.setVideoPaused(typeof document != "undefined" && document.visibilityState != "visible")
 
         this.input.setControlStream(this.transport.controlStream)
         this.stats.setTransport(this.transport)
