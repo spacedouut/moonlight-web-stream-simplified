@@ -206,6 +206,12 @@ pub struct WebTransportConfig {
     /// Advertise the leaf certificate hash to browsers.
     #[serde(default)]
     pub advertise_certificate_hash: bool,
+    /// Generate a short-lived self-signed certificate for the WebTransport
+    /// endpoint and rotate it before it expires. Its hash is always advertised,
+    /// which is how browsers trust it (`serverCertificateHashes` only accepts
+    /// certificates valid for two weeks or less).
+    #[serde(default = "default_web_transport_auto_certificate")]
+    pub auto_certificate: bool,
     /// Video frames the relay may have in flight before it drops them and requests a keyframe
     #[serde(default = "default_web_transport_max_in_flight_video_frames")]
     pub max_in_flight_video_frames: usize,
@@ -237,6 +243,9 @@ fn default_web_transport_bind_address() -> SocketAddr {
 }
 fn default_web_transport_max_in_flight_video_frames() -> usize {
     64
+}
+fn default_web_transport_auto_certificate() -> bool {
+    true
 }
 // -- Moonlight
 

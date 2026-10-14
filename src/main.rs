@@ -298,7 +298,7 @@ async fn start(config: Config) -> Result<(), anyhow::Error> {
         }
     });
 
-    if let Some(certificate) = app.config().web_server.certificate.as_ref() {
+    let tls_config = if let Some(certificate) = app.config().web_server.certificate.as_ref() {
         info!("[Server]: Running Https Server with ssl tls");
 
         let certificate_chain = {
@@ -314,31 +314,44 @@ async fn start(config: Config) -> Result<(), anyhow::Error> {
         };
         let private_key = PrivateKeyDer::from_pem_file(&certificate.private_key_pem)?;
 
-        let tls_config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certificate_chain, private_key)?;
+        Some(
+            ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(certificate_chain, private_key)?,
+        )
+    } else {
+        None
+    };
 
-        if let Some(web_transport) = config.web_server.web_transport.as_ref() {
-            spawn_web_transport_server(
+    if let Some(web_transport) = config.web_server.web_transport.as_ref() {
+        // The generated certificate is preferred: it rotates on its own and the
+        // client trusts it by hash, so the configured certificate can stay
+        // long-lived (browsers ignore `serverCertificateHashes` mismatches on
+        // it anyway).
+        let web_transport_tls = if let Some(auto_certificate) = app.web_transport_certificate() {
+            Some(auto_certificate.tls_config())
+        } else {
+            tls_config.clone()
+        };
+        match web_transport_tls {
+            Some(tls) => spawn_web_transport_server(
                 app.clone(),
-                tls_config.clone(),
+                tls,
                 web_transport,
                 &config.web_server.url_path_prefix,
-            )?;
-        }
-
-        server
-            .bind_rustls_0_23(bind_address, tls_config)?
-            .run()
-            .await?;
-    } else {
-        if app.config().web_server.web_transport.is_some() {
-            tracing::warn!(
+            )?,
+            None => tracing::warn!(
                 "WebTransport is configured but requires a TLS certificate; not starting it"
-            );
+            ),
         }
-        server.bind(bind_address)?.run().await?;
     }
+
+    match tls_config {
+        Some(tls_config) => server.bind_rustls_0_23(bind_address, tls_config)?,
+        None => server.bind(bind_address)?,
+    }
+    .run()
+    .await?;
 
     Ok(())
 }

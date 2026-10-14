@@ -15,7 +15,7 @@
 //! resets them, drops frames until the next keyframe and requests one.
 
 use std::{
-    sync::Arc,
+    sync::{Arc, RwLock as StdRwLock},
     time::{Duration, Instant},
 };
 
@@ -35,7 +35,12 @@ use moonlight_common::stream::{
     },
     tokio::MoonlightStreamEvent,
 };
-use rustls::{ServerConfig, pki_types::pem::PemObject};
+use rustls::{
+    ServerConfig,
+    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, pem::PemObject},
+    server::ResolvesServerCert,
+    sign::CertifiedKey,
+};
 use sha2::{Digest, Sha256};
 use tokio::{
     select,
@@ -89,12 +94,14 @@ pub async fn web_transport_config(
     let Some(config) = app.config().web_server.web_transport.as_ref() else {
         return Err(AppError::WebTransportDisabled);
     };
-    if app.config().web_server.certificate.is_none() {
+    if app.web_transport_certificate().is_none() && app.config().web_server.certificate.is_none() {
         return Err(AppError::WebTransportDisabled);
     }
     let prefix = &app.config().web_server.url_path_prefix;
     let path = format!("{prefix}/api/host/stream/web_transport");
-    let certificate_hash = if config.advertise_certificate_hash {
+    let certificate_hash = if let Some(auto_certificate) = app.web_transport_certificate() {
+        Some(auto_certificate.leaf_hash())
+    } else if config.advertise_certificate_hash {
         app.config()
             .web_server
             .certificate
@@ -117,9 +124,138 @@ pub async fn web_transport_config(
 }
 
 fn certificate_hash_from_pem(path: &str) -> Option<String> {
-    let mut certs = rustls::pki_types::CertificateDer::pem_file_iter(path).ok()?;
+    let mut certs = CertificateDer::pem_file_iter(path).ok()?;
     let cert = certs.next()?.ok()?;
     Some(hex::encode(Sha256::digest(cert.as_ref())))
+}
+
+/// Chrome only accepts a `serverCertificateHashes` match when the certificate
+/// lives for two weeks or less, so the generated certificate gets ten days and
+/// is swapped out halfway through.
+const AUTO_CERTIFICATE_LIFETIME: time::Duration = time::Duration::days(10);
+const AUTO_CERTIFICATE_RENEW: Duration = Duration::from_secs(5 * 24 * 60 * 60);
+const AUTO_CERTIFICATE_RETRY: Duration = Duration::from_secs(60 * 60);
+
+/// Self-signed certificate the WebTransport endpoint generates and rotates on
+/// its own. Browsers trust it through `serverCertificateHashes`, advertised by
+/// the config endpoint.
+pub struct AutoCertificate {
+    sans: Vec<String>,
+    current: StdRwLock<CurrentCertificate>,
+}
+
+struct CurrentCertificate {
+    certified_key: Arc<CertifiedKey>,
+    leaf_hash: String,
+    renew_at: Instant,
+}
+
+impl AutoCertificate {
+    /// Generates the first certificate and spawns the rotation task.
+    pub fn start(cfg: &WebTransportConfig) -> Result<Arc<Self>, anyhow::Error> {
+        let mut sans = vec!["localhost".to_string()];
+        if let Some(host) = cfg
+            .public_url
+            .as_deref()
+            .and_then(|url| url.split("://").nth(1))
+            .and_then(|rest| rest.split('/').next())
+            .and_then(|authority| authority.split(':').next())
+            && !host.is_empty()
+        {
+            sans.push(host.to_string());
+        }
+
+        let certificate = Arc::new(Self {
+            current: StdRwLock::new(Self::generate(&sans)?),
+            sans,
+        });
+        info!("[Server]: Generated self-signed WebTransport certificate");
+
+        tokio::spawn({
+            let certificate = certificate.clone();
+            async move {
+                loop {
+                    let delay = certificate
+                        .current
+                        .read()
+                        .map(|current| current.renew_at.saturating_duration_since(Instant::now()))
+                        .unwrap_or(AUTO_CERTIFICATE_RETRY);
+                    tokio::time::sleep(delay).await;
+                    match Self::generate(&certificate.sans) {
+                        Ok(next) => {
+                            if let Ok(mut current) = certificate.current.write() {
+                                *current = next;
+                            }
+                            info!("[Server]: Rotated WebTransport certificate");
+                        }
+                        Err(err) => {
+                            error!(error = %err, "web transport certificate rotation failed");
+                            if let Ok(mut current) = certificate.current.write() {
+                                current.renew_at = Instant::now() + AUTO_CERTIFICATE_RETRY;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(certificate)
+    }
+
+    fn generate(sans: &[String]) -> Result<CurrentCertificate, anyhow::Error> {
+        let mut params = rcgen::CertificateParams::new(sans.to_vec())?;
+        let now = time::OffsetDateTime::now_utc();
+        params.not_before = now - time::Duration::minutes(5);
+        params.not_after = now + AUTO_CERTIFICATE_LIFETIME;
+
+        let key_pair = rcgen::KeyPair::generate()?;
+        let cert = params.self_signed(&key_pair)?;
+        let leaf = cert.der().clone();
+        let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
+        let signing_key = rustls::crypto::ring::sign::any_supported_type(&private_key)?;
+
+        Ok(CurrentCertificate {
+            certified_key: Arc::new(CertifiedKey::new(vec![leaf.clone()], signing_key)),
+            leaf_hash: hex::encode(Sha256::digest(leaf.as_ref())),
+            renew_at: Instant::now() + AUTO_CERTIFICATE_RENEW,
+        })
+    }
+
+    /// SHA-256 of the current leaf certificate, for `serverCertificateHashes`.
+    pub fn leaf_hash(&self) -> String {
+        self.current
+            .read()
+            .map(|current| current.leaf_hash.clone())
+            .unwrap_or_default()
+    }
+
+    /// TLS config that always serves the latest rotated certificate.
+    pub fn tls_config(self: &Arc<Self>) -> ServerConfig {
+        ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(AutoCertificateResolver(self.clone())))
+    }
+}
+
+#[derive(Debug)]
+struct AutoCertificateResolver(Arc<AutoCertificate>);
+
+impl std::fmt::Debug for AutoCertificate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutoCertificate")
+            .field("sans", &self.sans)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ResolvesServerCert for AutoCertificateResolver {
+    fn resolve(&self, _client_hello: rustls::server::ClientHello) -> Option<Arc<CertifiedKey>> {
+        self.0
+            .current
+            .read()
+            .ok()
+            .map(|current| current.certified_key.clone())
+    }
 }
 
 const MAX_FRAME: usize = 1 << 20;
