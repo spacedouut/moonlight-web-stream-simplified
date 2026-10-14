@@ -213,7 +213,7 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: moonlight-web-${{ matrix.arch }}-unknown-linux-musl
+          name: moonlight-web-${{ matrix.arch }}-unknown-linux-gnu
           path: ./docker/moonlight-web
 
       - uses: docker/login-action@v3
