@@ -5,6 +5,9 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
+# Allocator (musl's default malloc is slow on the per-packet paths)
+mimalloc = "0.1.52"
+
 # Cli
 clap = { version = "4.5.53", features = ["derive", "env"] }
 ts-rs = "11.0.1"
