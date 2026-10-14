@@ -305,14 +305,19 @@ WebTransport streams over HTTP/3 and QUIC. Configure it under `web_server.web_tr
             "bind_address": "[::]:4433",
             "public_url": "https://example.com:4433",
             "advertise_certificate_hash": false,
+            "auto_certificate": true,
             "max_in_flight_video_frames": 64
         }
     }
 }
 ```
 
-TLS is required, and the configured UDP port must be open to clients. `public_url` is optional;
+The configured UDP port must be open to clients. `public_url` is optional;
 without it, the browser derives the URL from the current host and configured UDP port.
+`auto_certificate` (default `true`) generates a short-lived self-signed certificate for the
+WebTransport endpoint and rotates it automatically; its hash is always advertised to the
+browser, so no certificate files are needed and WebTransport works even without TLS on the
+web server. Set it to `false` to serve the configured `web_server.certificate` instead.
 `advertise_certificate_hash` is intended only for short-lived ECDSA certificates.
 `max_in_flight_video_frames` (default `64`) limits how many video frames can be sent but not yet
 acknowledged by the browser. When the limit is reached, the relay drops the backlog and requests a

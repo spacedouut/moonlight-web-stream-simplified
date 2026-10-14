@@ -159,7 +159,12 @@ impl AutoCertificate {
             .as_deref()
             .and_then(|url| url.split("://").nth(1))
             .and_then(|rest| rest.split('/').next())
-            .and_then(|authority| authority.split(':').next())
+            .map(|authority| {
+                authority
+                    .strip_prefix('[')
+                    .and_then(|rest| rest.split(']').next())
+                    .unwrap_or_else(|| authority.split(':').next().unwrap_or(authority))
+            })
             && !host.is_empty()
         {
             sans.push(host.to_string());
