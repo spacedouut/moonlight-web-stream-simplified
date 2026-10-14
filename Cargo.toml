@@ -5,9 +5,6 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-# Allocator (musl's default malloc is slow on the per-packet paths)
-mimalloc = "0.1.52"
-
 # Cli
 clap = { version = "4.5.53", features = ["derive", "env"] }
 ts-rs = "11.0.1"
@@ -65,6 +62,10 @@ sha2 = "0.10.9"
 # Other
 uuid = { version = "1.24.0" }
 hex = { version = "0.4.3" }
+
+# Allocator (musl's default malloc is slow on the per-packet paths). Not on Windows: mimalloc v3 doesn't build with cross's mingw headers.
+[target.'cfg(not(windows))'.dependencies]
+mimalloc = "0.1.52"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
