@@ -215,6 +215,12 @@ export class StreamInput {
     // release any modifier we think is pressed when the event says it isn't
     // held — otherwise it stays pressed on the host forever.
     private releaseStaleModifiers(event: KeyboardEvent) {
+        // Synthetic events (on-screen keyboard) carry no real modifier
+        // state — only trust events from the actual keyboard.
+        if (!event.isTrusted) {
+            return
+        }
+
         const modifiers: Array<[boolean, Array<number>]> = [
             [event.shiftKey, [StreamKeys.VK_LSHIFT, StreamKeys.VK_RSHIFT]],
             [event.ctrlKey, [StreamKeys.VK_LCONTROL, StreamKeys.VK_RCONTROL]],
@@ -240,7 +246,9 @@ export class StreamInput {
             this.sendKey(false, key, emptyKeyModifiers())
         }
         this.pressedKeys.clear()
+    }
 
+    raiseAllMouseButtons() {
         for (const button of this.pressedMouseButtons) {
             this.sendMouseButton(false, button)
         }
