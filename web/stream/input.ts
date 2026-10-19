@@ -1,3 +1,4 @@
+import { StreamKeys } from "../api_bindings"
 import { showNotification } from "../component/notification"
 import { ClientInputEvent, ControllerButtons, ControllerCapabilities, ControllerType, ControlPacket, ControlPacket_Tags, KeyAction, KeyModifiers, MouseButton, MouseButtonAction, TouchEventType } from "../uniffi/moonlight_common_bindings"
 import { U16_MAX } from "./buffer"
@@ -120,6 +121,7 @@ export class StreamInput {
 
     // -- Keyboard
     private pressedKeys: Set<number> = new Set()
+    private pressedMouseButtons: Set<MouseButton> = new Set()
 
     onKeyDown(event: KeyboardEvent) {
         this.sendKeyEvent(true, event)
@@ -173,6 +175,8 @@ export class StreamInput {
     }
 
     private sendKeyEvent(isDown: boolean, event: KeyboardEvent) {
+        this.releaseStaleModifiers(event)
+
         const key = convertToKey(event)
         if (key == null) {
             return
@@ -205,11 +209,42 @@ export class StreamInput {
         this.sendKey(isDown, key, modifiers)
     }
 
+    // A modifier's keyup can get lost entirely: it can go to another window
+    // (Alt+Tab) or get eaten by browser UI, with no blur/visibilitychange in
+    // between. Every keyboard event still reports the true modifier state, so
+    // release any modifier we think is pressed when the event says it isn't
+    // held — otherwise it stays pressed on the host forever.
+    private releaseStaleModifiers(event: KeyboardEvent) {
+        const modifiers: Array<[boolean, Array<number>]> = [
+            [event.shiftKey, [StreamKeys.VK_LSHIFT, StreamKeys.VK_RSHIFT]],
+            [event.ctrlKey, [StreamKeys.VK_LCONTROL, StreamKeys.VK_RCONTROL]],
+            [event.altKey, [StreamKeys.VK_LMENU, StreamKeys.VK_RMENU]],
+            [event.metaKey, [StreamKeys.VK_LWIN, StreamKeys.VK_RWIN]],
+        ]
+
+        for (const [isHeld, keys] of modifiers) {
+            if (isHeld) {
+                continue
+            }
+
+            for (const key of keys) {
+                if (this.pressedKeys.delete(key)) {
+                    this.sendKey(false, key, emptyKeyModifiers())
+                }
+            }
+        }
+    }
+
     raiseAllKeys() {
         for (const key of this.pressedKeys) {
             this.sendKey(false, key, emptyKeyModifiers())
         }
         this.pressedKeys.clear()
+
+        for (const button of this.pressedMouseButtons) {
+            this.sendMouseButton(false, button)
+        }
+        this.pressedMouseButtons.clear()
     }
 
     // Note: key = StreamKeys.VK_, modifiers = StreamKeyModifiers.
@@ -390,6 +425,12 @@ export class StreamInput {
         this.sendLocalCursorPosition()
     }
     sendMouseButton(isDown: boolean, button: MouseButton) {
+        if (isDown) {
+            this.pressedMouseButtons.add(button)
+        } else {
+            this.pressedMouseButtons.delete(button)
+        }
+
         this.controlStream?.send(new ClientInputEvent.MouseButton({
             action: isDown ? MouseButtonAction.Press : MouseButtonAction.Release,
             button
