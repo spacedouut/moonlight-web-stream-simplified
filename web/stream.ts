@@ -243,11 +243,13 @@ class ViewerApp implements Component {
 
         window.addEventListener("blur", () => {
             this.stream.getInput().raiseAllKeys()
+            this.stream.getInput().raiseAllMouseButtons()
         })
         document.addEventListener("visibilitychange", () => {
             const visible = document.visibilityState === "visible"
             if (!visible) {
                 this.stream.getInput().raiseAllKeys()
+                this.stream.getInput().raiseAllMouseButtons()
             }
             this.stream.onVisibilityChanged(visible)
         })
