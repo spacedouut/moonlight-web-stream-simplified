@@ -333,7 +333,9 @@ class ViewerApp implements Component {
 
             this.armFullscreenOnNextInteraction()
         } else if (data.type == "streamEnded") {
-            await this.exitFullscreen()
+            if (this.isFullscreen()) {
+                await this.exitFullscreen()
+            }
             await showMessage(I.stream.hostEndedStream)
 
             exitStreamPage()

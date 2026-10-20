@@ -561,6 +561,11 @@ pub(super) fn video_rtcp_feedback() -> Vec<RTCPFeedback> {
             parameter: "pli".to_string(),
         },
         RTCPFeedback {
+            // full intra request (idr)
+            typ: "ccm".to_string(),
+            parameter: "fir".to_string(),
+        },
+        RTCPFeedback {
             // receiver estimated maximum bitrate
             typ: "goog-remb".to_string(),
             parameter: "".to_string(),
