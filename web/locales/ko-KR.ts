@@ -14,6 +14,7 @@ export const koKR: Translations = {
         fullscreenUnsupported: "현재 브라우저에서 전체 화면을 지원하지 않습니다!",
         fullscreenEscapeHint: "전체 화면을 종료하려면 ESC 키를 몇 초간 길게 누르세요.",
         pointerLockUnsupported: "마우스 커서 고정(Pointer Lock)이 지원되지 않습니다.",
+        hostEndedStream: "호스트가 스트림을 종료했습니다.",
         connecting: "연결 중",
         showLogs: "로그 표시",
         hideLogs: "로그 숨기기",

@@ -1,8 +1,10 @@
+use crate::api::stream::PACKET_SIZE;
 use crate::api::stream::webrtc::audio::AudioChannel;
 use crate::api::stream::webrtc::control::ControlChannel;
 use crate::api::stream::webrtc::ext_color_space::COLOR_SPACE_URI;
+use crate::api::stream::webrtc::forward_interceptor::RtcpForwarderInterceptor;
 use crate::api::stream::webrtc::stream::webrtc_loop;
-use crate::api::stream::webrtc::video::VideoChannel;
+use crate::api::stream::webrtc::video::{VideoChannel, video_rtcp_feedback};
 use crate::config::{PortRange, WebRtcConfig};
 use actix_web::HttpRequest;
 use actix_web::body::BoxBody;
@@ -30,8 +32,8 @@ use moonlight_common::webrtc::header::WebRTCLinkHeader;
 use moonlight_common::webrtc::offer::WebRTCSessionOffer;
 use moonlight_common::webrtc::sdp::Session;
 use rtc::ice::network_type::NetworkType;
-use rtc::interceptor::Registry;
-use rtc::peer_connection::configuration::media_engine::MIME_TYPE_OPUS;
+use rtc::interceptor::{FlexFec03SendBuilder, Registry, Slot};
+use rtc::peer_connection::configuration::media_engine::{MIME_TYPE_FLEX_FEC03, MIME_TYPE_OPUS};
 use rtc::peer_connection::transport::RTCDtlsRole;
 use rtc::rtp_transceiver::rtp_sender::{
     RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RTCRtpHeaderExtensionCapability, RtpCodecKind,
@@ -61,10 +63,13 @@ use crate::app::AppError;
 use crate::app::stream::{ExternalStreamEvent, Stream, StreamId};
 use crate::app::{auth::AuthUser, host::HostId};
 
+const FLEX_FEC_PAYLOAD_TYPE: u8 = 49;
+
 mod audio;
 mod control;
 mod convert;
 mod ext_color_space;
+mod forward_interceptor;
 mod ice_servers;
 mod stream;
 mod video;
@@ -142,6 +147,23 @@ fn create_media_engine(video_formats: &HashMap<VideoFormat, RTCRtpCodecParameter
             .register_codec(codec.clone(), RtpCodecKind::Video)
             .expect("register video codec");
     }
+
+    // register flex fec
+    media_engine
+        .register_codec(
+            RTCRtpCodecParameters {
+                rtp_codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_FLEX_FEC03.to_owned(),
+                    clock_rate: 90000,
+                    channels: 0,
+                    sdp_fmtp_line: "repair-window=10000000".to_owned(),
+                    rtcp_feedback: video_rtcp_feedback(),
+                },
+                payload_type: FLEX_FEC_PAYLOAD_TYPE,
+            },
+            RtpCodecKind::Video,
+        )
+        .expect("register flex-fec-03 codec");
 
     // register extensions
     const PLAYOUT_DELAY_URI: &str = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay";
@@ -307,7 +329,7 @@ pub async fn webrtc_post(
         fps: session.fps,
         fps_x100: session.fps * 100,
         bitrate: session.bitrate,
-        packet_size: 2048,
+        packet_size: PACKET_SIZE,
         // There's not need to encrypt video
         encryption_flags: EncryptionFlags::AUDIO | EncryptionFlags::FOUNDATION_MICROPHONE,
         streaming_remotely: StreamingConfig::Auto,
@@ -339,8 +361,21 @@ pub async fn webrtc_post(
     let mut media_engine = create_media_engine(video_channel.supported_video_formats());
 
     // Interceptor Registry
-    let interceptor_registry = register_default_interceptors(Registry::new(), &mut media_engine)
-        .expect("register default interceptors");
+    let interceptor_registry = register_default_interceptors(
+        Registry::new()
+            // 1 FEC packet per 5 media packets, the same 20% Moonlight uses by default
+            .with(
+                Slot::FecEncoder,
+                FlexFec03SendBuilder::default()
+                    .with_num_media_packets(5)
+                    .with_num_fec_packets(1)
+                    .build(),
+            )
+            // PLI and FIR only reach the track with this, see https://github.com/webrtc-rs/webrtc/blob/deaddd32dc4f5f6da06c6267e1bf2e25a64fe222/examples/rtcp-processing/rtcp-processing.rs
+            .with(Slot::from(14_000), RtcpForwarderInterceptor::default()),
+        &mut media_engine,
+    )
+    .expect("register default interceptors");
 
     let peer_app = app.clone();
     let peer_offer = offer.clone();

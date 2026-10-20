@@ -14,6 +14,7 @@ export const frFr: Translations = {
         fullscreenUnsupported: "Mode plein écran non supporté par votre navigateur !",
         fullscreenEscapeHint: "Pour quitter le mode plein écran, vous devrez maintenir la touche Echap appuyée quelques secondes.",
         pointerLockUnsupported: "Verrouillage du pointeur non supporté",
+        hostEndedStream: "L'hôte a mis fin au stream.",
         connecting: "Connexion",
         showLogs: "Afficher les journaux",
         hideLogs: "Cacher les journaux",

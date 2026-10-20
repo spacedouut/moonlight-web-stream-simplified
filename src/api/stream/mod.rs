@@ -52,7 +52,7 @@ pub async fn start_moonlight_stream(
         fps: request.fps,
         fps_x100: request.fps * 100,
         bitrate: request.bitrate,
-        packet_size: 2048,
+        packet_size: PACKET_SIZE,
         encryption_flags: EncryptionFlags::AUDIO | EncryptionFlags::FOUNDATION_MICROPHONE,
         streaming_remotely: StreamingConfig::Auto,
         sops: true,
@@ -107,6 +107,8 @@ pub async fn start_moonlight_stream(
     Ok((stream, response))
 }
 pub mod webrtc;
+
+const PACKET_SIZE: u32 = 1024;
 
 fn server_version() -> ServerVersion {
     ServerVersion::new(7, 0, 0, 0)
