@@ -12,6 +12,7 @@ export const en = {
         fullscreenUnsupported: "Fullscreen is not supported by your browser!",
         fullscreenEscapeHint: "To exit Fullscreen you'll have to hold ESC for a few seconds.",
         pointerLockUnsupported: "Pointer Lock not supported",
+        hostEndedStream: "The host ended the stream.",
         connecting: "Connecting",
         showLogs: "Show Logs",
         hideLogs: "Hide Logs",

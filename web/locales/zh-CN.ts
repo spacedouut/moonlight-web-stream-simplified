@@ -14,6 +14,7 @@ export const zhCN: Translations = {
         fullscreenUnsupported: "你的浏览器不支持全屏。",
         fullscreenEscapeHint: "退出全屏需要按住 ESC 几秒。",
         pointerLockUnsupported: "浏览器不支持鼠标锁定",
+        hostEndedStream: "主机已结束串流。",
         connecting: "正在连接",
         showLogs: "显示日志",
         hideLogs: "隐藏日志",

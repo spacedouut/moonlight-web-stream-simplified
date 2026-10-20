@@ -1,7 +1,7 @@
 import { Api, apiHostCancel, apiWebRTCConfiguration, apiWebRTCOffer, apiWebTransportConfig, describeError, FetchError } from "../api"
 import { Component } from "../component/index"
 import { Settings, TransportType } from "../component/settings_menu"
-import { ControlPacket, ControlPacket_Tags, VideoFormats } from "../uniffi/moonlight_common_bindings"
+import { ControlPacket, ControlPacket_Tags, TerminationReason_Tags, VideoFormats } from "../uniffi/moonlight_common_bindings"
 import { globalObject, wait } from "../util"
 import { AudioPlayer, AudioPlayerSetup } from "./audio/index"
 import { buildAudioPipeline } from "./audio/pipeline"
@@ -31,6 +31,7 @@ export type InfoEvent = CustomEvent<
     { type: "app", appName: string } |
     { type: "connectionComplete", capabilities: StreamCapabilities } |
     { type: "videoReady" } |
+    { type: "streamEnded" } |
     { type: "addDebugLine", line: string, additional?: LogMessageInfo }
 >
 export type InfoEventListener = (event: InfoEvent) => void
@@ -825,6 +826,22 @@ export class Stream implements Component {
     private boundReceivePacket = this.onReceivePacket.bind(this)
     private onReceivePacket(packet: ControlPacket) {
         switch (packet.tag) {
+            case ControlPacket_Tags.ServerTermination: {
+                const reason = packet.inner.reason
+                // 0x80030023: ML_ERROR_GRACEFUL_TERMINATION
+                const graceful = reason.tag == TerminationReason_Tags.Long && reason.inner[0] == 0x80030023
+
+                // stop() also ends the reconnect loop
+                this.stop()
+
+                if (graceful) {
+                    this.eventTarget.dispatchEvent(new CustomEvent("stream-info", { detail: { type: "streamEnded" } }))
+                } else {
+                    this.debugLog("The host ended the stream", { type: "fatal" })
+                    this.debugLog(`Termination code 0x${reason.inner[0].toString(16)}`, { type: "fatalDescription" })
+                }
+                return
+            }
             case ControlPacket_Tags.HdrMode:
                 if (this.videoRenderer && this.videoRenderer.setHdrMode) {
                     this.videoRenderer?.setHdrMode(packet.inner.enabled, packet.inner.sunshine)

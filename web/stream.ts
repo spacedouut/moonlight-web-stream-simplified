@@ -7,6 +7,7 @@ import { getModalBackground, Modal, showMessage, showModal } from "./component/m
 import { showNotification } from "./component/notification"
 import { getLocalStreamSettings, globalDefaultSettings, Settings, TransportType } from "./component/settings_menu"
 import { getSidebarRoot, setSidebar, setSidebarExtended, setSidebarStyle, Sidebar } from "./component/sidebar/index"
+import { buildUrl } from "./config_"
 import { getCurrentLanguage, getTranslations, Language, normalizeLanguage } from "./i18n"
 import { requestKeyboardLock } from "./iframe"
 import "./polyfill/index"
@@ -331,6 +332,11 @@ class ViewerApp implements Component {
             this.sidebar.onCapabilitiesChange(data.capabilities)
 
             this.armFullscreenOnNextInteraction()
+        } else if (data.type == "streamEnded") {
+            await this.exitFullscreen()
+            await showMessage(I.stream.hostEndedStream)
+
+            exitStreamPage()
         }
     }
 
@@ -1142,12 +1148,7 @@ class ViewerSidebar implements Component, Sidebar {
                 }
             }
 
-            if (window.matchMedia('(display-mode: standalone)').matches) {
-                history.back()
-            } else {
-                window.close()
-            }
-
+            exitStreamPage()
         })
         this.buttonDiv.appendChild(this.exitStreamButton)
 
@@ -1307,4 +1308,19 @@ function stopPropagationOn(element: HTMLElement) {
 }
 function onStopPropagation(event: Event) {
     event.stopPropagation()
+}
+
+function exitStreamPage() {
+    if (window.matchMedia('(display-mode: standalone)').matches && history.length > 1) {
+        history.back()
+    } else {
+        window.close()
+
+        // Browsers may refuse to close a tab the user opened directly; go back to the host list instead
+        window.setTimeout(() => {
+            if (!window.closed) {
+                window.location.replace(buildUrl("/"))
+            }
+        }, 0)
+    }
 }

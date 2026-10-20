@@ -14,6 +14,7 @@ export const ptBR: Translations = {
         fullscreenUnsupported: "Tela cheia não é suportada pelo seu navegador!",
         fullscreenEscapeHint: "Para sair da tela cheia, segure ESC por alguns segundos.",
         pointerLockUnsupported: "Bloqueio de ponteiro não suportado",
+        hostEndedStream: "O host encerrou a transmissão.",
         connecting: "Conectando",
         showLogs: "Mostrar Logs",
         hideLogs: "Ocultar Logs",

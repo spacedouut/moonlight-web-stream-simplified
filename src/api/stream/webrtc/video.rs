@@ -14,7 +14,7 @@ use rtc::{
     media_stream::MediaStreamTrack,
     peer_connection::configuration::media_engine::{MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC},
     rtcp::payload_feedbacks::{
-        picture_loss_indication::PictureLossIndication,
+        full_intra_request::FullIntraRequest, picture_loss_indication::PictureLossIndication,
         receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate,
     },
     rtp::{
@@ -26,7 +26,7 @@ use rtc::{
         SSRC,
         rtp_sender::{
             RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters,
-            RTCRtpEncodingParameters, RtpCodecKind,
+            RTCRtpEncodingParameters, RTCRtpFecParameters, RtpCodecKind,
         },
     },
 };
@@ -115,6 +115,10 @@ impl VideoChannel {
         RustCryptoBackend.random_bytes(&mut ssrc)?;
         let ssrc = SSRC::from_ne_bytes(ssrc);
 
+        let mut fec_ssrc = [0; 4];
+        RustCryptoBackend.random_bytes(&mut fec_ssrc)?;
+        let fec_ssrc = SSRC::from_ne_bytes(fec_ssrc);
+
         let payload_type = codec.payload_type;
         let clock_rate = codec.rtp_codec.clock_rate;
         self.selected_format = Some(format);
@@ -128,6 +132,7 @@ impl VideoChannel {
             vec![RTCRtpEncodingParameters {
                 rtp_coding_parameters: RTCRtpCodingParameters {
                     ssrc: Some(ssrc),
+                    fec: Some(RTCRtpFecParameters { ssrc: fec_ssrc }),
                     ..Default::default()
                 },
                 codec: codec.rtp_codec.clone(),
@@ -309,8 +314,8 @@ impl VideoChannel {
                         for packet in packets {
                             let packet = packet.as_any();
 
-                            if packet.downcast_ref::<PictureLossIndication>().is_some() {
-                                debug!("got picture loss indication, set need idr flag");
+                            if packet.is::<PictureLossIndication>() || packet.is::<FullIntraRequest>() {
+                                debug!("got keyframe request, set need idr flag");
                                 return Ok(VideoChannelEvent::SignalIdr);
                             } else if let Some(ReceiverEstimatedMaximumBitrate { bitrate: _, .. }) =
                                 packet.downcast_ref::<ReceiverEstimatedMaximumBitrate>()
@@ -402,7 +407,7 @@ fn get_video_formats(sdp: &Session) -> HashMap<VideoFormat, RTCRtpCodecParameter
                         mime_type: MIME_TYPE_H264.to_string(),
                         sdp_fmtp_line: sdp_fmtp_line.to_string(),
                         clock_rate: *clock_rate,
-                        rtcp_feedback: rtcp_feedback(),
+                        rtcp_feedback: video_rtcp_feedback(),
                         ..Default::default()
                     },
                     payload_type: pt,
@@ -429,7 +434,7 @@ fn get_video_formats(sdp: &Session) -> HashMap<VideoFormat, RTCRtpCodecParameter
                         mime_type: MIME_TYPE_HEVC.to_string(),
                         sdp_fmtp_line: sdp_fmtp_line.to_string(),
                         clock_rate: *clock_rate,
-                        rtcp_feedback: rtcp_feedback(),
+                        rtcp_feedback: video_rtcp_feedback(),
                         ..Default::default()
                     },
                     payload_type: pt,
@@ -460,7 +465,7 @@ fn get_video_formats(sdp: &Session) -> HashMap<VideoFormat, RTCRtpCodecParameter
                         mime_type: MIME_TYPE_AV1.to_string(),
                         sdp_fmtp_line: sdp_fmtp_line.to_string(),
                         clock_rate: *clock_rate,
-                        rtcp_feedback: rtcp_feedback(),
+                        rtcp_feedback: video_rtcp_feedback(),
                         ..Default::default()
                     },
                     payload_type: pt,
@@ -543,7 +548,7 @@ fn parse_fmtp(attribute_value: &str) -> Option<(u8, &str)> {
     Some((pt, sdp_fmtp_line))
 }
 
-fn rtcp_feedback() -> Vec<RTCPFeedback> {
+pub(super) fn video_rtcp_feedback() -> Vec<RTCPFeedback> {
     vec![
         RTCPFeedback {
             // negative acknowledgement
