@@ -71,6 +71,7 @@ mod convert;
 mod ext_color_space;
 mod forward_interceptor;
 mod ice_servers;
+mod stats;
 mod stream;
 mod video;
 

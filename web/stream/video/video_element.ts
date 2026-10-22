@@ -1,3 +1,4 @@
+import { currentTelemetry } from "../telemetry"
 import { VideoFormats } from "../../uniffi/moonlight_common_bindings"
 import { globalObject } from "../../util"
 import { Pipe, PipeInfo } from "../pipeline/index"
@@ -65,6 +66,7 @@ export class VideoElementRenderer implements TrackVideoRenderer, VideoRenderer {
 
     private size: [number, number] | null = null
     private hdrEnabled: boolean = false
+    private videoFrameCallback: number | null = null
 
     constructor() {
         this.videoElement.classList.add("video-stream")
@@ -74,6 +76,14 @@ export class VideoElementRenderer implements TrackVideoRenderer, VideoRenderer {
         this.videoElement.disablePictureInPicture = true
         this.videoElement.playsInline = true
         this.videoElement.muted = true
+
+        if ("requestVideoFrameCallback" in this.videoElement) {
+            const onFrame = (now: number, metadata: VideoFrameCallbackMetadata) => {
+                currentTelemetry()?.onVideoElementFrame(now, metadata)
+                this.videoFrameCallback = this.videoElement.requestVideoFrameCallback(onFrame)
+            }
+            this.videoFrameCallback = this.videoElement.requestVideoFrameCallback(onFrame)
+        }
 
         if ("srcObject" in this.videoElement) {
             try {
@@ -95,6 +105,10 @@ export class VideoElementRenderer implements TrackVideoRenderer, VideoRenderer {
         this.size = [setup.width, setup.height]
     }
     cleanup(): void {
+        if (this.videoFrameCallback != null) {
+            this.videoElement.cancelVideoFrameCallback(this.videoFrameCallback)
+            this.videoFrameCallback = null
+        }
         if (this.oldTrack) {
             this.stream.removeTrack(this.oldTrack)
         }
@@ -190,6 +204,7 @@ export class UrlVideoElementRenderer implements UrlVideoRenderer, VideoRenderer 
     readonly implementationName: string = "video_element"
 
     private videoElement = document.createElement("video")
+    private videoFrameCallback: number | null = null
 
     private size: [number, number] | null = null
 
@@ -201,6 +216,14 @@ export class UrlVideoElementRenderer implements UrlVideoRenderer, VideoRenderer 
         this.videoElement.disablePictureInPicture = true
         this.videoElement.playsInline = true
         this.videoElement.muted = true
+
+        if ("requestVideoFrameCallback" in this.videoElement) {
+            const onFrame = (now: number, metadata: VideoFrameCallbackMetadata) => {
+                currentTelemetry()?.onVideoElementFrame(now, metadata)
+                this.videoFrameCallback = this.videoElement.requestVideoFrameCallback(onFrame)
+            }
+            this.videoFrameCallback = this.videoElement.requestVideoFrameCallback(onFrame)
+        }
 
         addPipePassthrough(this)
     }

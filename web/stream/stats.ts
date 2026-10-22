@@ -1,6 +1,7 @@
 import { globalObject } from "../util"
 import { Logger } from "./log"
 import { Pipe } from "./pipeline/index"
+import { StreamTelemetry, TelemetrySnapshot } from "./telemetry"
 import { Transport } from "./transport/index"
 
 export type StatValue = string | number
@@ -20,6 +21,8 @@ export type StreamStatsSample = {
     transport: Record<string, StatValue>
     video: Record<string, StatValue>
     audio: Record<string, StatValue>
+    /** Averages (p95 in brackets) of the latency stages over the last 5 s. */
+    latency: Record<string, string>
 }
 
 export type StreamStatsData = {
@@ -28,6 +31,14 @@ export type StreamStatsData = {
     transport: Record<string, StatValue>
     video: Record<string, StatValue>
     audio: Record<string, StatValue>
+    telemetry: TelemetrySnapshot | null
+}
+
+export const STATS_LEVEL_LABELS: Record<StatsLevel, string> = {
+    off: "off",
+    minimal: "hud",
+    medium: "normal",
+    max: "nerds",
 }
 
 function num(value: number | null | undefined, suffix?: string): string | null {
@@ -91,8 +102,10 @@ export class StreamStats {
         audioPipeline: null,
         transport: {},
         video: {},
-        audio: {}
+        audio: {},
+        telemetry: null,
     }
+    private telemetry: StreamTelemetry | null = null
 
     constructor(logger?: Logger) {
         if (logger) {
@@ -100,8 +113,17 @@ export class StreamStats {
         }
     }
 
+    setTelemetry(telemetry: StreamTelemetry) {
+        this.telemetry = telemetry
+    }
+    getTelemetry(): StreamTelemetry | null {
+        return this.telemetry
+    }
+
     setTransport(transport: Transport) {
         this.transport = transport
+        // Old per-transport counters would show up as new values otherwise.
+        this.statsData.transport = {}
 
         this.checkEnabled()
     }
@@ -184,11 +206,20 @@ export class StreamStats {
         }
         this.lastHistoryTime = now
 
+        const latency: Record<string, string> = {}
+        const stages = this.telemetry?.snapshot().stages ?? {}
+        for (const [key, summary] of Object.entries(stages)) {
+            if (summary) {
+                latency[key] = `${summary.avg.toFixed(2)} (${summary.p95.toFixed(2)})`
+            }
+        }
+
         this.history.push({
             time: now,
             transport: { ...this.statsData.transport },
             video: { ...this.statsData.video },
             audio: { ...this.statsData.audio },
+            latency,
         })
         if (this.history.length > HISTORY_MAX_SAMPLES) {
             this.history.splice(0, this.history.length - HISTORY_MAX_SAMPLES)
@@ -247,8 +278,9 @@ export class StreamStats {
     }
 
     getCurrentStats(): StreamStatsData {
-        const data = {}
-        Object.assign(data, this.statsData)
-        return data as StreamStatsData
+        return {
+            ...this.statsData,
+            telemetry: this.telemetry?.snapshot() ?? null,
+        }
     }
 }

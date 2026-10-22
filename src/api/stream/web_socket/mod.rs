@@ -28,6 +28,7 @@ use tracing::{Instrument, debug, debug_span, error, info, instrument, trace, war
 use crate::{
     api::stream::{
         create_control_packet_config, start_moonlight_stream,
+        telemetry::{RelayClock, RelayTelemetry, VIDEO_HEADER_LEN, write_video_header},
         web_socket::delay_controller::{DelayController, DelayState},
     },
     app::{App, AppError, auth::AuthUser},
@@ -185,6 +186,8 @@ async fn ws_loop(
     control_config: ControlPacketConfig,
 ) -> Result<(), AppError> {
     let mut relay_stats_ticker = pin!(interval(Duration::from_secs(1)));
+    let clock = RelayClock::new();
+    let mut telemetry = RelayTelemetry::new();
 
     let mut ping_ticker = pin!(interval(Duration::from_millis(100)));
     let mut delay_controller = DelayController::default();
@@ -225,6 +228,7 @@ async fn ws_loop(
                         let _ = ws_sender.send(WsData::Bytes(buffer.into()));
                     }
                     MoonlightStreamEvent::Video(VideoStreamEvent::SignalIdr) => {
+                        telemetry.on_host_idr_request();
                         if let Err(err)=  stream.send_raw(ControlPacket::RequestIdr) {
                             warn!(error = %err, "failed to request idr after the moonlight video stream requested an idr");
                         }
@@ -279,18 +283,14 @@ async fn ws_loop(
                         }
 
                         // TODO: avoid using payloading and depayloading the frame like this
-                        let mut buffer = vec![0; 1 + 5 + frame.raw().len()];
-                        buffer[(1 + 5)..].copy_from_slice(frame.raw());
+                        let raw = frame.raw();
+                        let metadata = frame.metadata();
+                        telemetry.on_frame(&metadata, raw.len());
 
+                        let mut buffer = vec![0; 1 + VIDEO_HEADER_LEN + raw.len()];
                         buffer[0] = WebSocketChannel::VIDEO;
-                        buffer[1] = if is_idr {
-                            1
-                        } else {
-                            0
-                        };
-                        buffer[2..6].copy_from_slice(
-                            &(frame.metadata().timestamp.as_micros() as u32).to_be_bytes(),
-                        );
+                        write_video_header(&mut buffer[1..], &metadata, clock.now_us());
+                        buffer[(1 + VIDEO_HEADER_LEN)..].copy_from_slice(raw);
 
                         let _ = ws_sender.send(WsData::Bytes(buffer.into()));
                     }
@@ -328,12 +328,10 @@ async fn ws_loop(
                     }
                 };
 
+                let stats = telemetry.take(clock.now_us(), Some((rtt.rtt, rtt.rtt_variance)), None);
                 send_ws_message(
                     &mut ws_sender,
-                    WebSocketClientboundMessage::Stats(StreamStatsClientboundMessage::RelayRtt {
-                        rtt_ms: rtt.rtt.as_millis() as u32,
-                        rtt_variance_ms: rtt.rtt_variance.as_millis() as u32,
-                    })
+                    WebSocketClientboundMessage::Stats(StreamStatsClientboundMessage::RelayStats(stats)),
                 );
             }
             // Handle incoming ws requests
@@ -377,7 +375,10 @@ async fn ws_loop(
                         if let WebSocketServerboundMessage::Stats(StreamStatsServerboundMessage::Ping(id)) =
                             message
                         {
-                            send_ws_message(&mut ws_sender, WebSocketClientboundMessage::Stats(StreamStatsClientboundMessage::Pong(id)));
+                            send_ws_message(&mut ws_sender, WebSocketClientboundMessage::Stats(StreamStatsClientboundMessage::Pong {
+                                id,
+                                relay_time_us: clock.now_us() as f64,
+                            }));
                         }
                     }
                     Message::Pong(bytes) => {

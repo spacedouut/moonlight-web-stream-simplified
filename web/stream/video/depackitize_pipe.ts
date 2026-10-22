@@ -1,4 +1,4 @@
-import { ByteBuffer } from "../buffer"
+import { currentTelemetry, parseVideoFrameHeader, VIDEO_FRAME_HEADER_LENGTH } from "../telemetry"
 import { Logger } from "../log"
 import { Pipe, PipeInfo } from "../pipeline/index"
 import { addPipePassthrough, DataPipe } from "../pipeline/pipes"
@@ -24,7 +24,6 @@ export class DepacketizeVideoPipe implements DataPipe {
     private base: DataVideoRenderer
 
     private lastTimestampMicroseconds = 0
-    private buffer = new ByteBuffer(5)
 
     constructor(base: DataVideoRenderer, logger?: Logger) {
         this.implementationName = `depacketize_video -> ${base.implementationName}`
@@ -34,22 +33,21 @@ export class DepacketizeVideoPipe implements DataPipe {
     }
 
     submitPacket(buffer: Uint8Array) {
-        this.buffer.reset()
-
-        this.buffer.putU8Array(buffer.slice(0, 5))
-
-        this.buffer.flip()
-
-        const frameType = this.buffer.getU8()
-        const timestamp = this.buffer.getU32()
+        const header = parseVideoFrameHeader(buffer)
+        if (!header) {
+            return
+        }
+        const timestamp = header.timestampUs
+        const data = buffer.slice(VIDEO_FRAME_HEADER_LENGTH)
+        currentTelemetry()?.onFrameReceived(header, data.length)
 
         // The u32 timestamp wraps (~71 min of microseconds) and resets on
         // host reconnect; a negative delta makes EncodedVideoChunk throw
         // (duration must fit unsigned long long). Clamp to zero in that case.
         const duration = Math.max(0, timestamp - this.lastTimestampMicroseconds)
         this.base.submitDecodeUnit({
-            type: frameType == 0 ? "delta" : "key",
-            data: buffer.slice(5),
+            type: header.keyframe ? "key" : "delta",
+            data,
             durationMicroseconds: duration,
             timestampMicroseconds: timestamp,
         })

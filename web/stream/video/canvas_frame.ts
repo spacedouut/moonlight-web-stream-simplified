@@ -1,3 +1,4 @@
+import { currentTelemetry } from "../telemetry"
 import { copyIntoYuv, yuvBufferSize } from "../../libopenh264/index"
 import { globalObject } from "../../util"
 import { Logger } from "../log"
@@ -95,6 +96,8 @@ export class CanvasFrameDrawPipe extends BaseCanvasFrameDrawPipe implements Fram
         addPipePassthrough(this)
     }
 
+    private lastDrawnTimestamp: number | null = null
+
     submitFrame(frame: VideoFrame): void {
         this.currentFrame?.close()
 
@@ -118,6 +121,10 @@ export class CanvasFrameDrawPipe extends BaseCanvasFrameDrawPipe implements Fram
         context.drawImage(frame, 0, 0, w, h)
 
         this.base.commitFrame()
+        if (this.lastDrawnTimestamp !== frame.timestamp) {
+            this.lastDrawnTimestamp = frame.timestamp
+            currentTelemetry()?.onFrameDrawn(frame.timestamp)
+        }
     }
 }
 

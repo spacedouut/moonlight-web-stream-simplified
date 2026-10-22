@@ -12,7 +12,7 @@ use moonlight_common::stream::{
     },
     tokio::{MoonlightStream, MoonlightStreamEvent},
 };
-use tokio::{select, sync::mpsc};
+use tokio::{select, sync::mpsc, time::interval};
 use tracing::{debug, info, warn};
 use webrtc::{
     data_channel::DataChannel,
@@ -20,18 +20,25 @@ use webrtc::{
 };
 
 use crate::{
-    api::stream::webrtc::{
-        WebRtcHandler,
-        audio::AudioChannel,
-        control::{ControlChannel, ControlChannelEvent},
-        video::{VideoChannel, VideoChannelEvent},
+    api::{
+        bindings::StreamStatsClientboundMessage,
+        stream::{
+            telemetry::{RelayClock, RelayTelemetry},
+            webrtc::{
+                WebRtcHandler,
+                audio::AudioChannel,
+                control::{ControlChannel, ControlChannelEvent},
+                stats::StatsChannel,
+                video::{VideoChannel, VideoChannelEvent},
+            },
+        },
     },
     app::AppError,
 };
 
 pub async fn webrtc_loop(
     mut stream: MoonlightStream,
-    _peer: &dyn PeerConnection,
+    peer: &dyn PeerConnection,
     mut audio_channel: AudioChannel,
     mut video_channel: VideoChannel,
     mut control_channel: ControlChannel,
@@ -42,6 +49,17 @@ pub async fn webrtc_loop(
 
     let mut last_key_states_sequence_number = 0;
     let mut last_key_states = CompactKeyStates::default();
+
+    let stats_channel = match StatsChannel::new(peer).await {
+        Ok(channel) => Some(channel),
+        Err(err) => {
+            warn!(error = %err, "failed to create stats data channel");
+            None
+        }
+    };
+    let clock = RelayClock::new();
+    let mut telemetry = RelayTelemetry::new();
+    let mut relay_stats_ticker = interval(Duration::from_secs(1));
 
     let mut moonlight_disconnected = false;
     let mut peer_was_disconnected = true;
@@ -82,6 +100,14 @@ pub async fn webrtc_loop(
                     continue;
                 }
             }
+            _ = relay_stats_ticker.tick() => {
+                if let Some(stats_channel) = &stats_channel {
+                    let rtt = stream.estimated_rtt().ok().map(|rtt| (rtt.rtt, rtt.rtt_variance));
+                    stats_channel.send(StreamStatsClientboundMessage::RelayStats(
+                        telemetry.take(clock.now_us(), rtt, None),
+                    ));
+                }
+            }
             result = stream.drive() => {
                 if moonlight_disconnected {
                     continue;
@@ -98,11 +124,13 @@ pub async fn webrtc_loop(
                         audio_channel.on_frame(frame);
                     }
                     MoonlightStreamEvent::Video(VideoStreamEvent::SignalIdr) => {
+                        telemetry.on_host_idr_request();
                         if let Err(err) = stream.send_raw(ControlPacket::RequestIdr) {
                             warn!(error = %err, "failed to send idr");
                         }
                     }
                     MoonlightStreamEvent::Video(VideoStreamEvent::OnFrame(frame)) => {
+                        telemetry.on_frame(&frame.metadata(), frame.raw().len());
                         if !matches!(peer_state, RTCPeerConnectionState::Connected) {
                             continue;
                         }
@@ -140,6 +168,7 @@ pub async fn webrtc_loop(
 
                 match event {
                     VideoChannelEvent::SignalIdr => {
+                        telemetry.on_relay_idr_request();
                         if let Err(err) = stream.send_raw(ControlPacket::RequestIdr) {
                             warn!(error = %err, "failed to send idr");
                         }
