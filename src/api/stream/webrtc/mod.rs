@@ -66,6 +66,7 @@ mod control;
 mod convert;
 mod ext_color_space;
 mod ice_servers;
+mod stats;
 mod stream;
 mod video;
 

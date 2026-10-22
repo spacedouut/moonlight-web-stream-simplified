@@ -252,8 +252,41 @@ pub enum StreamStatsServerboundMessage {
 #[derive(Serialize, Deserialize, Debug, TS)]
 #[ts(export, export_to = EXPORT_PATH)]
 pub enum StreamStatsClientboundMessage {
-    Pong(u32),
-    RelayRtt { rtt_ms: u32, rtt_variance_ms: u32 },
+    /// `relay_time_us` is the relay clock when the ping was answered, see `RelayStats::relay_time_us`.
+    Pong {
+        id: u32,
+        relay_time_us: f64,
+    },
+    RelayStats(RelayStats),
+}
+
+/// Relay-side counters for the last stats interval (about 1 s).
+#[derive(Serialize, Deserialize, Debug, Clone, TS)]
+#[ts(export, export_to = EXPORT_PATH)]
+pub struct RelayStats {
+    /// Microseconds since the relay session started. Video frame headers use the same clock.
+    pub relay_time_us: f64,
+    pub interval_ms: f64,
+    /// RTT between the host (Sunshine) and the relay.
+    pub host_rtt_ms: Option<f64>,
+    pub host_rtt_variance_ms: Option<f64>,
+    /// Video frames the relay received from the host in this interval.
+    pub frames: u32,
+    pub keyframes: u32,
+    pub bytes: f64,
+    pub max_frame_bytes: u32,
+    /// Frame numbers skipped by the host stream, i.e. frames lost before the relay.
+    pub frame_index_gaps: u32,
+    /// Sunshine's own capture + encode time.
+    pub host_latency_avg_ms: Option<f64>,
+    pub host_latency_min_ms: Option<f64>,
+    pub host_latency_max_ms: Option<f64>,
+    pub host_idr_requests: u32,
+    pub relay_idr_requests: u32,
+    /// Times the relay discarded queued video because the client fell behind.
+    pub backlog_drops: u32,
+    /// Video frames sent but not yet acknowledged (WebTransport only).
+    pub frames_in_flight: Option<u32>,
 }
 
 ts_consts!(

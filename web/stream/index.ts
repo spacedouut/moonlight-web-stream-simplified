@@ -5,11 +5,12 @@ import { ControlPacket, ControlPacket_Tags, VideoFormats } from "../uniffi/moonl
 import { globalObject, wait } from "../util"
 import { AudioPlayer, AudioPlayerSetup } from "./audio/index"
 import { buildAudioPipeline } from "./audio/pipeline"
-import { StreamDebugRecorder } from "./debug_report"
+import { DebugLogEntry, StreamDebugRecorder } from "./debug_report"
 import { defaultStreamInputConfig, StreamInput } from "./input"
 import { Logger, LogMessageInfo } from "./log"
 import { gatherPipeInfo, pipeName } from "./pipeline/index"
 import { StreamStats } from "./stats"
+import { currentTelemetry, setCurrentTelemetry, StreamTelemetry } from "./telemetry"
 import { Transport, TransportAudioType, TransportConnectData, TransportOptions, TransportShutdown, TransportVideoType } from "./transport/index"
 import { WebSocketTransport } from "./transport/web_socket"
 import { WebTransportTransport } from "./transport/web_transport"
@@ -104,6 +105,7 @@ const FALLBACK_RECONNECT_DELAY_MS = 500
 export class Stream implements Component {
     private logger: Logger = new Logger()
     private debugRecorder = new StreamDebugRecorder()
+    private telemetry = new StreamTelemetry()
 
     private api: Api
 
@@ -126,9 +128,11 @@ export class Stream implements Component {
     private streamerSize: [number, number]
 
     constructor(api: Api, hostId: number, appId: number, settings: Settings, viewerScreenSize: [number, number]) {
-        this.logger.addInfoListener((info, type) => {
-            this.debugLog(info, { type: type ?? undefined })
+        this.logger.addInfoListener((message, _type, info) => {
+            this.debugLog(message, info)
         })
+        setCurrentTelemetry(this.telemetry)
+        this.telemetry.addEventListener(event => this.debugRecorder.event(`telemetry.${event.kind}`, event.detail))
 
         this.api = api
 
@@ -154,13 +158,14 @@ export class Stream implements Component {
 
         // Stream Stats
         this.stats = new StreamStats(this.logger)
+        this.stats.setTelemetry(this.telemetry)
 
         this.startConnection()
     }
 
     private debugLog(message: string, additional?: LogMessageInfo) {
         for (const line of message.split("\n")) {
-            this.debugRecorder.log(line, additional?.type ?? null)
+            this.debugRecorder.log(line, additional)
 
             const event: InfoEvent = new CustomEvent("stream-info", {
                 detail: { type: "addDebugLine", line, additional }
@@ -240,6 +245,7 @@ export class Stream implements Component {
 
         this.input.setControlStream(this.transport.controlStream)
         this.stats.setTransport(this.transport)
+        this.telemetry.event("transport", { name: this.transport.implementationName })
     }
 
     private async createTransportOptions(): Promise<TransportOptions | null> {
@@ -796,6 +802,9 @@ export class Stream implements Component {
     async stop(): Promise<boolean> {
         this.isStopped = true
         this.stats.stop()
+        if (currentTelemetry() === this.telemetry) {
+            setCurrentTelemetry(null)
+        }
         this.debugRecorder.dispose()
 
         if (this.connectionWarningIntervalId != null) {
@@ -846,6 +855,14 @@ export class Stream implements Component {
     getInput(): StreamInput {
         return this.input
     }
+    getDebugLogs(): DebugLogEntry[] {
+        return this.debugRecorder.getLogs()
+    }
+
+    getTransportName(): string | null {
+        return this.transport?.implementationName ?? null
+    }
+
     getStats(): StreamStats {
         return this.stats
     }
@@ -876,6 +893,12 @@ export class Stream implements Component {
             stats: this.stats.getCurrentStats(),
             statsHistory: this.stats.getHistory(),
             transportDebug,
+            telemetry: {
+                snapshot: this.telemetry.snapshot(),
+                recentFrames: this.telemetry.recentFrames(),
+                events: this.telemetry.getEvents(),
+            },
         })
     }
 }
+

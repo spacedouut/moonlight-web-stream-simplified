@@ -76,11 +76,44 @@ export type PostPairResponse2 = { "PairError": string } | { "Paired": DetailedHo
 
 export type PostWakeUpRequest = { host_id: number, };
 
+/**
+ * Relay-side counters for the last stats interval (about 1 s).
+ */
+export type RelayStats = { 
+/**
+ * Microseconds since the relay session started. Video frame headers use the same clock.
+ */
+relay_time_us: number, interval_ms: number, 
+/**
+ * RTT between the host (Sunshine) and the relay.
+ */
+host_rtt_ms: number | null, host_rtt_variance_ms: number | null, 
+/**
+ * Video frames the relay received from the host in this interval.
+ */
+frames: number, keyframes: number, bytes: number, max_frame_bytes: number, 
+/**
+ * Frame numbers skipped by the host stream, i.e. frames lost before the relay.
+ */
+frame_index_gaps: number, 
+/**
+ * Sunshine's own capture + encode time.
+ */
+host_latency_avg_ms: number | null, host_latency_min_ms: number | null, host_latency_max_ms: number | null, host_idr_requests: number, relay_idr_requests: number, 
+/**
+ * Times the relay discarded queued video because the client fell behind.
+ */
+backlog_drops: number, 
+/**
+ * Video frames sent but not yet acknowledged (WebTransport only).
+ */
+frames_in_flight: number | null, };
+
 export type RtcIceServer = { urls: Array<string>, username: string, credential: string, };
 
 export type StreamColorspace = "Rec601" | "Rec709" | "Rec2020";
 
-export type StreamStatsClientboundMessage = { "Pong": number } | { "RelayRtt": { rtt_ms: number, rtt_variance_ms: number, } };
+export type StreamStatsClientboundMessage = { "Pong": { id: number, relay_time_us: number, } } | { "RelayStats": RelayStats };
 
 export type StreamStatsServerboundMessage = { "Ping": number };
 

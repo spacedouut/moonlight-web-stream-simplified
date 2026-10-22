@@ -16,7 +16,7 @@ import { InfoEvent, Stream, StreamCapabilities } from "./stream/index"
 import { defaultStreamInputConfig, MouseMode, ScreenKeyboardSetVisibleEvent, StreamInputConfig } from "./stream/input"
 import { emptyKeyModifiers } from "./stream/keyboard"
 import { LogMessageType } from "./stream/log"
-import { streamStatsToText } from "./stream/stats"
+import { StatsOverlay } from "./stream/stats_overlay"
 import "./styles/index"
 import { LogLevel, uniffiInitAsync, Logger as UniffiLogger, setLogger as uniffiSetLogger } from "./uniffi/entry"
 
@@ -159,7 +159,7 @@ class ViewerApp implements Component {
 
     private div = document.createElement("div")
 
-    private statsDiv = document.createElement("div")
+    private statsOverlay = new StatsOverlay()
     private localTouchCursorDiv = document.createElement("div")
     private stream: Stream
 
@@ -205,24 +205,25 @@ class ViewerApp implements Component {
         setSidebar(this.sidebar)
 
         // Configure stats element
-        this.statsDiv.hidden = true
-        this.statsDiv.classList.add("video-stats")
         this.localTouchCursorDiv.hidden = true
         this.localTouchCursorDiv.classList.add("local-touch-cursor")
 
         setInterval(() => {
-            // Update stats display every 100ms
-            const stats = this.getStream()?.getStats()
-            if (stats && stats.isEnabled()) {
-                this.statsDiv.hidden = false
-
-                const text = streamStatsToText(stats.getCurrentStats(), stats.getLevel())
-                this.statsDiv.innerText = text
-            } else {
-                this.statsDiv.hidden = true
+            const stream = this.getStream()
+            const stats = stream?.getStats()
+            if (!stream || !stats || !stats.isEnabled()) {
+                this.statsOverlay.update(null)
+                return
             }
-        }, 100)
-        this.div.appendChild(this.statsDiv)
+            this.statsOverlay.update({
+                level: stats.getLevel(),
+                stats: stats.getCurrentStats(),
+                telemetry: stats.getTelemetry(),
+                transportName: stream.getTransportName(),
+                logs: stream.getDebugLogs(),
+            })
+        }, 200)
+        this.div.appendChild(this.statsOverlay.root)
         this.div.appendChild(this.localTouchCursorDiv)
 
         // Configure stream

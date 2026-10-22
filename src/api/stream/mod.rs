@@ -3,6 +3,7 @@ use moonlight_common::{
     stream::proto::control::packet::{ControlPacketConfig, RawControlPacketType},
 };
 
+pub mod telemetry;
 pub mod web_socket;
 pub mod web_transport;
 

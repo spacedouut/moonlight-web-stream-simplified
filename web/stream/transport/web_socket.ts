@@ -1,5 +1,6 @@
+import { currentTelemetry } from "../telemetry"
 import { Api } from "../../api"
-import { ApiErrorBody, WebSocketChannel, WebSocketClientboundMessage, WebSocketServerboundMessage } from "../../api_bindings"
+import { ApiErrorBody, RelayStats, WebSocketChannel, WebSocketClientboundMessage, WebSocketServerboundMessage } from "../../api_bindings"
 import { ClientInputEvent, ControlPacket, ControlPacketConfig, controlPacketDeserialize, controlPacketSerialize, InputBatcher, PacketDirection } from "../../uniffi/moonlight_common_bindings"
 import { globalObject } from "../../util"
 import { AudioPlayer, TrackAudioPlayer } from "../audio/index"
@@ -112,14 +113,10 @@ export class WebSocketTransport implements Transport {
                 this.logger?.debug(message.Error.message, { type: "fatalDescription" })
             } else if ("Stats" in message) {
                 if ("Pong" in message.Stats) {
-                    const pongId = message.Stats.Pong
-                    this.onPongReceive(pongId)
-                } else if ("RelayRtt" in message.Stats) {
-                    const relayRtt = message.Stats.RelayRtt
-                    this.relayStats = {
-                        rttMs: relayRtt.rtt_ms,
-                        rttVarianceMs: relayRtt.rtt_variance_ms
-                    }
+                    this.onPongReceive(message.Stats.Pong.relay_time_us)
+                } else if ("RelayStats" in message.Stats) {
+                    this.relayStats = message.Stats.RelayStats
+                    currentTelemetry()?.onRelayStats(message.Stats.RelayStats)
                 }
             }
         } else if (data instanceof ArrayBuffer) {
@@ -130,6 +127,7 @@ export class WebSocketTransport implements Transport {
                 this.controlStream.onRawPacket(view.subarray(1))
             } else if (channel == WebSocketChannel.VIDEO) {
                 if (!this.videoGate.accept(view.subarray(1))) {
+                    currentTelemetry()?.onFrameGated()
                     return
                 }
                 this.videoPipeline?.submitPacket(view.subarray(1))
@@ -213,7 +211,7 @@ export class WebSocketTransport implements Transport {
         this.audioPipeline = pipeline as (DataPipe & AudioPlayer)
     }
 
-    private relayStats: { rttMs: number, rttVarianceMs: number } | null = null
+    private relayStats: RelayStats | null = null
     async getStats(): Promise<Record<string, StatValue>> {
         const out: Record<string, StatValue> = {}
 
@@ -222,9 +220,9 @@ export class WebSocketTransport implements Transport {
             out.resolution = `${this.connectData.videoSetup.width}x${this.connectData.videoSetup.height} @ ${this.connectData.videoSetup.fps} fps`
         }
 
-        if (this.relayStats) {
-            out.hostToRelayRttMs = this.relayStats.rttMs
-            out.hostToRelayRttVarianceMs = this.relayStats.rttVarianceMs
+        if (this.relayStats?.host_rtt_ms != null) {
+            out.hostToRelayRttMs = this.relayStats.host_rtt_ms
+            out.hostToRelayRttVarianceMs = this.relayStats.host_rtt_variance_ms ?? 0
         }
         out.relayToClientRttMs = await this.doPing()
 
@@ -233,11 +231,11 @@ export class WebSocketTransport implements Transport {
 
     // Do ping pong to get rtt
     private onPongPromise: Promise<number> | null = null
-    private pongReceiveResolve: (() => void) | null = null
+    private pongReceiveResolve: ((relayTimeUs: number) => void) | null = null
 
-    private onPongReceive(_id: number) {
+    private onPongReceive(relayTimeUs: number) {
         if (this.pongReceiveResolve) {
-            this.pongReceiveResolve()
+            this.pongReceiveResolve(relayTimeUs)
         }
     }
     private async doPing(): Promise<number> {
@@ -253,12 +251,13 @@ export class WebSocketTransport implements Transport {
         this.onPongPromise = new Promise<number>(resolve => {
             const start = performance.now()
 
-            this.pongReceiveResolve = () => {
+            this.pongReceiveResolve = (relayTimeUs) => {
                 this.pongReceiveResolve = null
                 this.onPongPromise = null
 
-                const diff = performance.now() - start
-                resolve(diff)
+                const now = performance.now()
+                currentTelemetry()?.clock.onPong(start, now, relayTimeUs)
+                resolve(now - start)
             }
         })
 

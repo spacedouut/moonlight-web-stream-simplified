@@ -1,3 +1,4 @@
+import { currentTelemetry } from "../telemetry"
 import { globalObject } from "../../util"
 import { Pipe, PipeInfo } from "../pipeline/index"
 import { addPipePassthrough } from "../pipeline/pipes"
@@ -42,6 +43,7 @@ export class VideoTrackGeneratorPipe implements FrameVideoRenderer {
 
             this.base.setTrack(this.trackGenerator.track)
         }
+        currentTelemetry()?.onFrameWrittenToTrack(frame.timestamp)
         this.writer.write(frame)
     }
 

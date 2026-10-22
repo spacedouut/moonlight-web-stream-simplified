@@ -1,5 +1,5 @@
 import { Settings } from "../component/settings_menu"
-import { LogMessageType } from "./log"
+import { LogLevel, LogMessageInfo, LogMessageType, logLevelOf } from "./log"
 import { StreamStatsData, StreamStatsSample } from "./stats"
 
 const MAX_LOG_ENTRIES = 5000
@@ -8,6 +8,8 @@ const MAX_EVENT_ENTRIES = 1000
 export type DebugLogEntry = {
     time: number
     type: LogMessageType | null
+    level: LogLevel
+    category: string | null
     line: string
 }
 
@@ -29,6 +31,7 @@ export type StreamDebugState = {
     stats: StreamStatsData
     statsHistory: StreamStatsSample[]
     transportDebug: Record<string, unknown> | null
+    telemetry: Record<string, unknown> | null
 }
 
 type NetworkInformationLike = EventTarget & {
@@ -104,8 +107,16 @@ export class StreamDebugRecorder {
         this.listenerAbort.abort()
     }
 
-    log(line: string, type: LogMessageType | null) {
-        pushCapped(this.logs, { time: Date.now(), type, line }, MAX_LOG_ENTRIES)
+    log(line: string, info: LogMessageInfo = {}) {
+        pushCapped(this.logs, { time: Date.now(), type: info.type ?? null, level: logLevelOf(info), category: info.category ?? null, line }, MAX_LOG_ENTRIES)
+    }
+
+    getLogs(): DebugLogEntry[] {
+        return this.logs
+    }
+
+    getEvents(): DebugEventEntry[] {
+        return this.events
     }
 
     event(event: string, detail?: unknown) {
@@ -117,7 +128,7 @@ export class StreamDebugRecorder {
 
         return {
             format: "moonlight-web-debug-report",
-            version: 1,
+            version: 2,
             generatedAt: new Date(now).toISOString(),
             streamStartedAt: new Date(this.startedAt).toISOString(),
             uptimeMs: now - this.startedAt,
@@ -157,6 +168,7 @@ export class StreamDebugRecorder {
                 history: state.statsHistory,
             },
             transportDebug: state.transportDebug,
+        telemetry: state.telemetry,
             events: this.events,
             logs: this.logs,
         }
