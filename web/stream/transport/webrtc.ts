@@ -1,5 +1,6 @@
+import { currentTelemetry } from "../telemetry"
 import { Api, fetchApi, WebRTCAnswer } from "../../api"
-import { StreamKeys } from "../../api_bindings"
+import { RelayStats, StreamKeys, WebSocketClientboundMessage } from "../../api_bindings"
 import { ActiveGamepads, ClientInputEvent, ClientInputEvent_Tags, ControlPacket, ControlPacketConfig, controlPacketDeserialize, controlPacketSerialize, KeyAction, keyStatesCanStore, keyStatesEmpty, keyStatesSetPressed, MouseButton, MouseButtonAction, PacketDirection, VideoFormats, WebRtcSessionAnswer, webrtcSessionAnswerParse, WebRtcSessionOffer, webrtcSessionOfferApply } from "../../uniffi/moonlight_common_bindings"
 import { globalObject, wait } from "../../util"
 import { AudioPlayer, TrackAudioPlayer } from "../audio/index"
@@ -347,6 +348,9 @@ export class WebRTCTransport implements Transport {
 
             this.controlStream.setChannel(channel, config)
         }
+        if (channel.label == "moonlight.stats") {
+            channel.addEventListener("message", this.onStatsChannelMessage.bind(this))
+        }
     }
 
     private onTrack(event: RTCTrackEvent) {
@@ -501,56 +505,125 @@ export class WebRTCTransport implements Transport {
         }
     }
 
-    private lastTotalDecodeTime = 0
-    private lastFramesDecoded = 0
+    private lastInbound: Record<string, number> = {}
+    private lastStatsAt: number | null = null
+    private relayStats: RelayStats | null = null
+
+    // Deltas of cumulative RTC counters since the previous getStats() call.
+    private delta(key: string, value: unknown): number | null {
+        if (typeof value != "number") {
+            return null
+        }
+        const last = this.lastInbound[key]
+        this.lastInbound[key] = value
+        return last == null ? null : value - last
+    }
+
     async getStats(): Promise<Record<string, StatValue>> {
         const out: Record<string, StatValue> = {}
 
-        // Control Stream
-        // TODO
-
         const stats = await this.peer.getStats()
+        const now = performance.now()
+        const intervalS = this.lastStatsAt == null ? null : (now - this.lastStatsAt) / 1000
+        this.lastStatsAt = now
+
+        let selectedPairId: string | null = null
+        for (const [_key, value] of stats) {
+            if (value.type == "transport" && typeof value.selectedCandidatePairId == "string") {
+                selectedPairId = value.selectedCandidatePairId
+            }
+        }
 
         for (const [_key, value] of stats) {
-            console.debug(value)
+            if (value.type == "inbound-rtp" && value.kind == "video") {
+                out.resolution = `${value.frameWidth}x${value.frameHeight}`
+                out.currentFps = value.framesPerSecond
 
-            // Video Stream
-            if ("type" in value && "kind" in value
-                && value.type == "inbound-rtp" && value.kind == "video"
-            ) {
-                out.resolution = `${value?.frameWidth}x${value?.frameHeight}`
+                out.framesReceived = value.framesReceived
+                out.framesDecoded = value.framesDecoded
+                out.framesDropped = value.framesDropped
+                out.keyFramesDecoded = value.keyFramesDecoded
+                out.freezeCount = value.freezeCount
+                out.totalFreezesDurationMs = (value.totalFreezesDuration ?? 0) * 1000
+                out.pauseCount = value.pauseCount
 
-                out.framesDecoded = value?.framesDecoded
-                out.framesDropped = value?.framesDropped
-                out.keyFramesDecoded = value?.keyFramesDecoded
+                out.packetsLost = value.packetsLost
+                out.packetsReceived = value.packetsReceived
+                out.jitterMs = (value.jitter ?? 0) * 1000
 
-                out.packetsLost = value?.packetsLost
-                out.packetsReceived = value?.packetsReceived
+                out.nackCount = value.nackCount
+                out.pliCount = value.pliCount
+                out.firCount = value.firCount
 
-                out.nackCount = value?.nackCount
-                out.pliCount = value?.pliCount
-                out.firCount = value?.firCount
+                if (value.decoderImplementation) out.decoderImplementation = value.decoderImplementation
+                if (value.powerEfficientDecoder != null) out.powerEfficientDecoder = `${value.powerEfficientDecoder}`
 
-                if ("totalDecodeTime" in value && "framesDecoded" in value) {
-                    out.decodeTimePerFrameMs = (value.totalDecodeTime - this.lastTotalDecodeTime) / (value.framesDecoded - this.lastFramesDecoded) * 1000.0
+                const decoded = this.delta("framesDecoded", value.framesDecoded)
+                const decodeTime = this.delta("totalDecodeTime", value.totalDecodeTime)
+                const processing = this.delta("totalProcessingDelay", value.totalProcessingDelay)
+                const assembly = this.delta("totalAssemblyTime", value.totalAssemblyTime)
+                const assembled = this.delta("framesAssembledFromMultiplePackets", value.framesAssembledFromMultiplePackets)
+                const jitterDelay = this.delta("jitterBufferDelay", value.jitterBufferDelay)
+                const jitterEmitted = this.delta("jitterBufferEmittedCount", value.jitterBufferEmittedCount)
+                const jitterTarget = this.delta("jitterBufferTargetDelay", value.jitterBufferTargetDelay)
+                const bytes = this.delta("bytesReceived", value.bytesReceived)
+                const lost = this.delta("packetsLost", value.packetsLost)
+                const received = this.delta("packetsReceived", value.packetsReceived)
 
-                    this.lastFramesDecoded = value.framesDecoded
-                    this.lastTotalDecodeTime = value.totalDecodeTime
+                if (decoded && decodeTime != null) out.decodeTimePerFrameMs = decodeTime / decoded * 1000
+                if (decoded && processing != null) out.processingDelayPerFrameMs = processing / decoded * 1000
+                if (assembled && assembly != null) out.assemblyTimePerFrameMs = assembly / assembled * 1000
+                if (jitterEmitted && jitterDelay != null) {
+                    out.jitterBufferDelayMs = jitterDelay / jitterEmitted * 1000
+                    currentTelemetry()?.onWebRtcJitterBuffer(out.jitterBufferDelayMs)
                 }
-
-                out.currentFps = value?.framesPerSecond
+                if (jitterEmitted && jitterTarget != null) out.jitterBufferTargetMs = jitterTarget / jitterEmitted * 1000
+                if (bytes != null && intervalS) out.videoBitrateKbps = bytes * 8 / 1000 / intervalS
+                if (lost != null && received != null && lost + received > 0) out.packetLossPercent = lost / (lost + received) * 100
             }
-            if ("type" in value && "mimeType" in value && typeof value.mimeType == "string"
-                && value.type == "codec" && value.mimeType.startsWith("video/")
-            ) {
+            if (value.type == "inbound-rtp" && value.kind == "audio") {
+                out.audioPacketsLost = value.packetsLost
+                out.audioJitterMs = (value.jitter ?? 0) * 1000
+                out.audioConcealedSamples = value.concealedSamples
+                const delay = this.delta("audioJitterBufferDelay", value.jitterBufferDelay)
+                const emitted = this.delta("audioJitterBufferEmittedCount", value.jitterBufferEmittedCount)
+                if (emitted && delay != null) out.audioJitterBufferDelayMs = delay / emitted * 1000
+            }
+            if (value.type == "codec" && typeof value.mimeType == "string" && value.mimeType.startsWith("video/")) {
                 out.codec = value.mimeType.substring(6)
-                out.codecSdpFmtpLine = value?.sdpFmtpLine
+                out.codecSdpFmtpLine = value.sdpFmtpLine
             }
+            if (value.type == "candidate-pair" && value.id == selectedPairId) {
+                if (value.currentRoundTripTime != null) out.relayToClientRttMs = value.currentRoundTripTime * 1000
+                if (value.availableIncomingBitrate != null) out.availableIncomingBitrateKbps = value.availableIncomingBitrate / 1000
+                const local = stats.get(value.localCandidateId)
+                const remote = stats.get(value.remoteCandidateId)
+                if (local) out.localCandidate = `${local.candidateType} ${local.protocol}${local.relayProtocol ? ` via ${local.relayProtocol}` : ""}`
+                if (remote) out.remoteCandidate = `${remote.candidateType} ${remote.protocol}`
+            }
+        }
 
-            // Audio Stream
+        if (this.relayStats?.host_rtt_ms != null) {
+            out.hostToRelayRttMs = this.relayStats.host_rtt_ms
+            out.hostToRelayRttVarianceMs = this.relayStats.host_rtt_variance_ms ?? 0
         }
 
         return out
+    }
+
+    private onStatsChannelMessage(event: MessageEvent) {
+        if (typeof event.data != "string") {
+            return
+        }
+        try {
+            const message = JSON.parse(event.data) as WebSocketClientboundMessage
+            if ("Stats" in message && "RelayStats" in message.Stats) {
+                this.relayStats = message.Stats.RelayStats
+                currentTelemetry()?.onRelayStats(message.Stats.RelayStats)
+            }
+        } catch (error) {
+            this.logger?.debug(`failed to parse relay stats: ${error}`)
+        }
     }
 }
 

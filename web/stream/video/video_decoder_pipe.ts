@@ -1,3 +1,4 @@
+import { currentTelemetry } from "../telemetry"
 import { VideoFormats } from "../../uniffi/moonlight_common_bindings"
 import { globalObject } from "../../util"
 import { Logger } from "../log"
@@ -118,6 +119,7 @@ export class VideoDecoderPipe implements DataVideoRenderer {
     }
 
     private onOutput(frame: VideoFrame) {
+        currentTelemetry()?.onDecoded(frame.timestamp)
         this.base.submitFrame(frame)
     }
 
@@ -256,8 +258,10 @@ export class VideoDecoderPipe implements DataVideoRenderer {
                 data: chunk,
             })
             this.decoder.decode(encodedChunk)
+            currentTelemetry()?.onDecodeSubmitted(unit.timestampMicroseconds, this.decoder.decodeQueueSize)
         } else {
             if (unit.type != "key" && this.needsKeyFrame) {
+                currentTelemetry()?.onDecodeSkipped(unit.timestampMicroseconds, "waiting_for_keyframe")
                 return
             }
             this.needsKeyFrame = false
@@ -271,6 +275,7 @@ export class VideoDecoderPipe implements DataVideoRenderer {
             })
 
             this.decoder.decode(chunk)
+            currentTelemetry()?.onDecodeSubmitted(unit.timestampMicroseconds, this.decoder.decodeQueueSize)
         }
     }
 
@@ -300,6 +305,7 @@ export class VideoDecoderPipe implements DataVideoRenderer {
             if (!this.requestedIdr) {
                 requestIdr = true
                 this.reset()
+                currentTelemetry()?.onDecoderReset(`decode queue ${this.decoder.decodeQueueSize} frames (~${Math.round(estimatedQueueDelayMs)} ms)`)
             }
             console.debug(`Requesting idr because of decode queue size(${this.decoder.decodeQueueSize}) and estimated delay of the queue: ${estimatedQueueDelayMs}`)
         }
@@ -312,6 +318,7 @@ export class VideoDecoderPipe implements DataVideoRenderer {
 
         if (requestIdr) {
             this.requestedIdr = true
+            currentTelemetry()?.onClientIdrRequest("video_decoder")
         }
 
         return requestIdr

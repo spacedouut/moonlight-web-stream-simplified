@@ -1,5 +1,6 @@
+import { currentTelemetry } from "../telemetry"
 import { Api, apiWebTransportConfig } from "../../api"
-import { ApiErrorBody, WebSocketChannel, WebSocketClientboundMessage, WebSocketServerboundMessage, WebTransportConfigResponse } from "../../api_bindings"
+import { ApiErrorBody, RelayStats, WebSocketChannel, WebSocketClientboundMessage, WebSocketServerboundMessage, WebTransportConfigResponse } from "../../api_bindings"
 import { ClientInputEvent, ControlPacket, ControlPacketConfig, controlPacketDeserialize, controlPacketSerialize, InputBatcher, PacketDirection } from "../../uniffi/moonlight_common_bindings"
 import { globalObject } from "../../util"
 import { AudioPlayer, TrackAudioPlayer } from "../audio/index"
@@ -11,6 +12,8 @@ import { VideoRenderer, TrackVideoRenderer } from "../video/index"
 import { generateControlPacketConfig, IControlStream, Transport, TransportAudioType, TransportConnectData, TransportOptions, TransportShutdown, TransportVideoType, VideoGate } from "./index"
 
 const PING_DATAGRAM_LENGTH = 5
+// Pongs append the relay clock (u64 microseconds).
+const PONG_DATAGRAM_LENGTH = PING_DATAGRAM_LENGTH + 8
 const PING_TIMEOUT_MS = 1000
 
 export class WebTransportTransport implements Transport {
@@ -29,7 +32,7 @@ export class WebTransportTransport implements Transport {
     private connectData: TransportConnectData | null = null
     private videoPipeline: DataPipe | null = null
     private audioPipeline: DataPipe | null = null
-    private relayStats: { rttMs: number, rttVarianceMs: number } | null = null
+    private relayStats: RelayStats | null = null
     private pingWriter: WritableStreamDefaultWriter<Uint8Array> | null = null
     private nextPingId = 0
     private pendingPings = new Map<number, number>()
@@ -238,7 +241,10 @@ export class WebTransportTransport implements Transport {
             this.serverError = message.Error
             this.logger?.debug(message.Error.message, { type: "fatalDescription" })
         } else if ("Stats" in message) {
-            if ("RelayRtt" in message.Stats) this.relayStats = { rttMs: message.Stats.RelayRtt.rtt_ms, rttVarianceMs: message.Stats.RelayRtt.rtt_variance_ms }
+            if ("RelayStats" in message.Stats) {
+                this.relayStats = message.Stats.RelayStats
+                currentTelemetry()?.onRelayStats(message.Stats.RelayStats)
+            }
         }
     }
 
@@ -249,6 +255,7 @@ export class WebTransportTransport implements Transport {
         else if (channel == WebSocketChannel.PING) this.onPingDatagram(data)
         else if (channel == WebSocketChannel.VIDEO) {
             if (!this.videoGate.accept(data.subarray(1))) {
+                currentTelemetry()?.onFrameGated()
                 return
             }
             this.videoPipeline?.submitPacket(data.subarray(1))
@@ -304,9 +311,9 @@ export class WebTransportTransport implements Transport {
             out.codec = this.connectData.videoSetup.codec
             out.resolution = `${this.connectData.videoSetup.width}x${this.connectData.videoSetup.height} @ ${this.connectData.videoSetup.fps} fps`
         }
-        if (this.relayStats) {
-            out.hostToRelayRttMs = this.relayStats.rttMs
-            out.hostToRelayRttVarianceMs = this.relayStats.rttVarianceMs
+        if (this.relayStats?.host_rtt_ms != null) {
+            out.hostToRelayRttMs = this.relayStats.host_rtt_ms
+            out.hostToRelayRttVarianceMs = this.relayStats.host_rtt_variance_ms ?? 0
         }
         this.sendPing()
         if (this.relayToClientRttMs != null) out.relayToClientRttMs = this.relayToClientRttMs
@@ -331,12 +338,17 @@ export class WebTransportTransport implements Transport {
     }
 
     private onPingDatagram(data: Uint8Array<ArrayBuffer>): void {
-        if (data.length != PING_DATAGRAM_LENGTH) return
-        const id = new DataView(data.buffer, data.byteOffset).getUint32(1)
+        if (data.length != PING_DATAGRAM_LENGTH && data.length != PONG_DATAGRAM_LENGTH) return
+        const view = new DataView(data.buffer, data.byteOffset, data.length)
+        const id = view.getUint32(1)
         const sentAt = this.pendingPings.get(id)
         if (sentAt == null) return
         this.pendingPings.delete(id)
-        this.relayToClientRttMs = performance.now() - sentAt
+        const now = performance.now()
+        this.relayToClientRttMs = now - sentAt
+        if (data.length == PONG_DATAGRAM_LENGTH) {
+            currentTelemetry()?.clock.onPong(sentAt, now, Number(view.getBigUint64(PING_DATAGRAM_LENGTH)))
+        }
     }
 
     sendControl(packet: ControlPacket, config: ControlPacketConfig): void {

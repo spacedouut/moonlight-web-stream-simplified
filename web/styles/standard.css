@@ -1481,3 +1481,123 @@ canvas.video-stream {
         width: 100%;
     }
 }
+
+.video-stats[data-level="medium"],
+.video-stats[data-level="max"] {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    max-width: min(920px, calc(100% - 16px));
+    max-height: calc(100% - 16px);
+    overflow: hidden;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.72);
+    color: #e8e8e8;
+    text-shadow: none;
+    font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.video-stats-hud {
+    font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    padding: 2px 6px;
+}
+
+.video-stats-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    font-weight: bold;
+}
+
+.video-stats-level {
+    opacity: 0.6;
+}
+
+.video-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 8px 14px;
+}
+
+.video-stats-section h4 {
+    margin: 0 0 3px 0;
+    font-size: 11px;
+    opacity: 0.6;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.video-stats-wide {
+    grid-column: 1 / -1;
+}
+
+.video-stats-section table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.video-stats-section th {
+    text-align: left;
+    font-weight: normal;
+    opacity: 0.75;
+    padding-right: 10px;
+    white-space: nowrap;
+}
+
+.video-stats-section td {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    word-break: break-all;
+}
+
+.video-stats-total th,
+.video-stats-total td {
+    font-weight: bold;
+    opacity: 1;
+    border-top: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.video-stats-bar {
+    display: flex;
+    height: 10px;
+    margin: 2px 0 4px 0;
+    border-radius: 2px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.video-stats-swatch {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    border-radius: 1px;
+}
+
+.video-stats-note {
+    margin-top: 3px;
+    opacity: 0.5;
+}
+
+.video-stats-graphs {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 6px 12px;
+}
+
+.video-stats-graph canvas {
+    display: block;
+    width: 100%;
+    height: 48px;
+}
+
+.video-stats-log div {
+    white-space: pre;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.video-stats-log-debug { opacity: 0.6; }
+.video-stats-log-warn { color: #f5a524; }
+.video-stats-log-error { color: #ff5c5c; }

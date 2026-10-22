@@ -60,7 +60,10 @@ use crate::{
             StreamStatsClientboundMessage, StreamStatsServerboundMessage, WebSocketChannel,
             WebSocketClientboundMessage, WebSocketServerboundMessage, WebTransportConfigResponse,
         },
-        stream::{create_control_packet_config, start_moonlight_stream},
+        stream::{
+            create_control_packet_config, start_moonlight_stream,
+            telemetry::{RelayClock, RelayTelemetry, VIDEO_HEADER_LEN, write_video_header},
+        },
     },
     app::{App, AppError, auth::AuthUser},
     config::WebTransportConfig,
@@ -518,6 +521,8 @@ async fn handle_session(
         .map_or(64, |config| config.max_in_flight_video_frames)
         .max(1);
     let mut video_sender = VideoSender::new(connection.clone(), max_in_flight_video_frames);
+    let clock = RelayClock::new();
+    let mut telemetry = RelayTelemetry::new();
 
     let control_config = create_control_packet_config();
     let mut relay_stats_ticker = interval(Duration::from_secs(1));
@@ -538,6 +543,7 @@ async fn handle_session(
                         } else { Outgoing::Uni(buffer.into()) }
                     }
                     MoonlightStreamEvent::Video(VideoStreamEvent::SignalIdr) => {
+                        telemetry.on_host_idr_request();
                         if let Err(err) = stream.send_raw(ControlPacket::RequestIdr) {
                             warn!(error = %err, "failed to request idr");
                         }
@@ -545,15 +551,22 @@ async fn handle_session(
                     }
                     MoonlightStreamEvent::Video(VideoStreamEvent::OnFrame(frame)) => {
                         let idr = frame.metadata().frame_type.serialize() == 2;
-                        let mut buffer = vec![0; 1 + 5 + frame.raw().len()];
+                        let raw = frame.raw();
+                        let metadata = frame.metadata();
+                        telemetry.on_frame(&metadata, raw.len());
+                        let mut buffer = vec![0; 1 + VIDEO_HEADER_LEN + raw.len()];
                         buffer[0] = WebSocketChannel::VIDEO;
-                        buffer[1] = if idr { 1 } else { 0 };
-                        buffer[2..6].copy_from_slice(&(frame.metadata().timestamp.as_micros() as u32).to_be_bytes());
-                        buffer[6..].copy_from_slice(frame.raw());
-                        if video_sender.send(buffer.into(), idr)
-                            && let Err(err) = stream.send_raw(ControlPacket::RequestIdr)
-                        {
-                            warn!(error = %err, "failed to request idr after dropping video backlog");
+                        write_video_header(&mut buffer[1..], &metadata, clock.now_us());
+                        buffer[(1 + VIDEO_HEADER_LEN)..].copy_from_slice(raw);
+                        let outcome = video_sender.send(buffer.into(), idr);
+                        if outcome.dropped_backlog {
+                            telemetry.on_backlog_drop();
+                        }
+                        if outcome.request_idr {
+                            telemetry.on_relay_idr_request();
+                            if let Err(err) = stream.send_raw(ControlPacket::RequestIdr) {
+                                warn!(error = %err, "failed to request idr after dropping video backlog");
+                            }
                         }
                         continue;
                     }
@@ -572,18 +585,19 @@ async fn handle_session(
                 }
             }
             _ = relay_stats_ticker.tick() => {
-                if let Ok(rtt) = stream.estimated_rtt()
-                    && !send_message(&sender, WebSocketClientboundMessage::Stats(StreamStatsClientboundMessage::RelayRtt {
-                        rtt_ms: rtt.rtt.as_millis() as u32,
-                        rtt_variance_ms: rtt.rtt_variance.as_millis() as u32,
-                    })) {
+                let rtt = stream.estimated_rtt().ok().map(|rtt| (rtt.rtt, rtt.rtt_variance));
+                let stats = telemetry.take(clock.now_us(), rtt, Some(video_sender.in_flight()));
+                if !send_message(&sender, WebSocketClientboundMessage::Stats(StreamStatsClientboundMessage::RelayStats(stats))) {
                     break;
                 }
             }
             incoming = incoming_rx.recv() => {
                 match incoming {
                     Some(Incoming::Message(WebSocketServerboundMessage::Stats(StreamStatsServerboundMessage::Ping(id)))) => {
-                        if !send_message(&sender, WebSocketClientboundMessage::Stats(StreamStatsClientboundMessage::Pong(id))) {
+                        if !send_message(&sender, WebSocketClientboundMessage::Stats(StreamStatsClientboundMessage::Pong {
+                            id,
+                            relay_time_us: clock.now_us() as f64,
+                        })) {
                             break;
                         }
                     }
@@ -604,11 +618,14 @@ async fn handle_session(
                     break;
                 };
                 let payload = datagram.payload();
-                if payload.len() == PING_DATAGRAM_LEN
-                    && payload[0] == WebSocketChannel::PING
-                    && connection.send_datagram(payload).is_err()
-                {
-                    break;
+                if payload.len() == PING_DATAGRAM_LEN && payload[0] == WebSocketChannel::PING {
+                    // Echo the ping and append the relay clock so the client can map frame timestamps.
+                    let mut pong = [0; PING_DATAGRAM_LEN + 8];
+                    pong[..PING_DATAGRAM_LEN].copy_from_slice(&payload[..]);
+                    pong[PING_DATAGRAM_LEN..].copy_from_slice(&clock.now_us().to_be_bytes());
+                    if connection.send_datagram(pong).is_err() {
+                        break;
+                    }
                 }
             }
             _ = connection.closed() => break,
@@ -616,6 +633,11 @@ async fn handle_session(
     }
     let _ = stream.disconnect();
     Ok(())
+}
+
+struct SendOutcome {
+    dropped_backlog: bool,
+    request_idr: bool,
 }
 
 /// Sends each video frame on its own unidirectional stream. When too many
@@ -640,14 +662,20 @@ impl VideoSender {
         }
     }
 
-    /// Returns true if the caller should request a keyframe.
-    fn send(&mut self, frame: Bytes, idr: bool) -> bool {
+    fn in_flight(&self) -> u32 {
+        (self.max_in_flight - self.in_flight.available_permits()) as u32
+    }
+
+    fn send(&mut self, frame: Bytes, idr: bool) -> SendOutcome {
         if idr {
             // Everything still in flight precedes this keyframe and is obsolete.
             self.cancel_in_flight();
             self.last_idr_request = None;
         } else if self.last_idr_request.is_some() {
-            return self.should_request_idr();
+            return SendOutcome {
+                dropped_backlog: false,
+                request_idr: self.should_request_idr(),
+            };
         }
 
         let Ok(permit) = self.in_flight.clone().try_acquire_owned() else {
@@ -656,7 +684,10 @@ impl VideoSender {
                 "dropping web transport video backlog and requesting idr"
             );
             self.cancel_in_flight();
-            return self.should_request_idr();
+            return SendOutcome {
+                dropped_backlog: true,
+                request_idr: self.should_request_idr(),
+            };
         };
 
         tokio::spawn(send_video_frame(
@@ -665,7 +696,10 @@ impl VideoSender {
             self.cancel.subscribe(),
             permit,
         ));
-        false
+        SendOutcome {
+            dropped_backlog: false,
+            request_idr: false,
+        }
     }
 
     fn cancel_in_flight(&mut self) {
