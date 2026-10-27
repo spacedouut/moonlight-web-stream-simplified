@@ -29,7 +29,7 @@ time = "0.3.47"
 
 # Moonlight
 # Make sure to keep the ubrn.config.yaml repo the same as this
-moonlight-common = { git = "https://github.com/spacedouut/moonlight-common-rust.git", rev = "b7869b4ab43f03edeb7a3e594e5d0ae2fec24c33", features = [
+moonlight-common = { git = "https://github.com/spacedouut/moonlight-common-rust.git", rev = "c1779da1a47b6f2d1f1caac894b45c80f944044f", features = [
     "tokio",
     "tokio-hyper",
     "rustcrypto",
