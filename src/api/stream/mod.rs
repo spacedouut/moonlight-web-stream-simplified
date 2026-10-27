@@ -85,6 +85,7 @@ pub async fn start_moonlight_stream(
             MoonlightStreamSetup::launch_query_parameters(),
         )
         .await?;
+    info!(config = ?config, "connecting to host");
     let stream = MoonlightStream::connect(
         config,
         settings,
