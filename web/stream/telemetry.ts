@@ -295,6 +295,8 @@ export class StreamTelemetry {
     private relay: RelayStats | null = null
     private relayHistory: Array<RelayStats & { receivedAt: number }> = []
     private presentation: PresentationKind | null = null
+    private webrtc = false
+    private warnedNoReceiveTime = false
     private decodeQueueSize: number | null = null
     private eventListeners: Array<(event: TelemetryEvent) => void> = []
 
@@ -336,6 +338,10 @@ export class StreamTelemetry {
         }
         if (stats.host_rtt_ms != null) {
             this.stage("hostToRelay").push(stats.host_rtt_ms / 2)
+        }
+        if (this.webrtc && stats.host_latency_avg_ms != null) {
+            // WebRTC frames carry no relay header, so host latency only arrives in these 1 s summaries.
+            this.stage("host").push(stats.host_latency_avg_ms)
         }
         if (stats.backlog_drops > 0) {
             this.event("relay_backlog_drop", { count: stats.backlog_drops, inFlight: stats.frames_in_flight })
@@ -478,12 +484,19 @@ export class StreamTelemetry {
     /** requestVideoFrameCallback on the <video> element. */
     onVideoElementFrame(now: number, metadata: VideoFrameCallbackMetadata) {
         const meta = metadata as VideoFrameCallbackMetadata & { receiveTime?: number, processingDuration?: number }
-        if (meta.receiveTime != null && meta.receiveTime > 0) {
+        const hasReceiveTime = meta.receiveTime != null && meta.receiveTime > 0
+        if (hasReceiveTime || this.webrtc) {
             // WebRTC: the browser knows when the packets arrived and how long decoding took.
+            this.webrtc = true
             this.presentation = "video_element"
             this.counters.framesPresented++
             this.presented.add(1, now)
-            this.stage("webrtcReceiveToDisplay").push(metadata.expectedDisplayTime - meta.receiveTime, now)
+            if (hasReceiveTime) {
+                this.stage("webrtcReceiveToDisplay").push(metadata.expectedDisplayTime - meta.receiveTime!, now)
+            } else if (!this.warnedNoReceiveTime) {
+                this.warnedNoReceiveTime = true
+                this.event("rvfc_missing_receive_time", { keys: Object.keys(metadata) })
+            }
             if (meta.processingDuration != null) {
                 this.stage("decode").push(meta.processingDuration * 1000, now)
             }
@@ -538,6 +551,7 @@ export class StreamTelemetry {
 
     // -- WebRTC
     onWebRtcJitterBuffer(delayMs: number) {
+        this.webrtc = true
         this.stage("webrtcJitterBuffer").push(delayMs)
     }
 
