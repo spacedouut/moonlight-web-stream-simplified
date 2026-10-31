@@ -105,27 +105,33 @@ export class RollingStat {
     }
 }
 
-/** Counts events and reports a per-second rate over the last few seconds. */
+/** Sums amounts (frames, bytes) and reports a per-second rate over the last few seconds. One entry per add() call. */
 export class RateCounter {
     private times: number[] = []
+    private amounts: number[] = []
+    private head = 0
     total = 0
 
-    add(count = 1, now = performance.now()) {
-        this.total += count
-        for (let i = 0; i < count; i++) {
-            this.times.push(now)
+    add(amount = 1, now = performance.now()) {
+        this.total += amount
+        this.times.push(now)
+        this.amounts.push(amount)
+        while (this.head < this.times.length && now - this.times[this.head] > WINDOW_MS) {
+            this.head++
         }
-        while (this.times.length > 0 && now - this.times[0] > WINDOW_MS) {
-            this.times.shift()
+        if (this.head > 1024 && this.head * 2 > this.times.length) {
+            this.times = this.times.slice(this.head)
+            this.amounts = this.amounts.slice(this.head)
+            this.head = 0
         }
     }
 
     perSecond(windowMs = 2000, now = performance.now()): number {
-        let count = 0
-        for (let i = this.times.length - 1; i >= 0 && now - this.times[i] <= windowMs; i--) {
-            count++
+        let sum = 0
+        for (let i = this.times.length - 1; i >= this.head && now - this.times[i] <= windowMs; i--) {
+            sum += this.amounts[i]
         }
-        return count * 1000 / windowMs
+        return sum * 1000 / windowMs
     }
 }
 
