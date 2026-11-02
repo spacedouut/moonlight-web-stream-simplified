@@ -21,6 +21,16 @@ impl StatsChannel {
             peer.create_data_channel("moonlight.stats", None).await?;
         let (on_send, mut on_send_receiver) = mpsc::unbounded_channel::<String>();
 
+        // Nothing here needs the channel's events, but they still have to be read. The webrtc
+        // driver queues at most 256 events per channel and once one queue is full it stops
+        // reading inbound SCTP for every channel. Each acked stats message adds a
+        // BufferedAmountLow event, so after a few minutes the input channels went silent.
+        spawn({
+            let channel = channel.clone();
+            async move { while channel.poll().await.is_some() {} }
+                .instrument(debug_span!("stats data channel event drain"))
+        });
+
         spawn(
             async move {
                 let mut connected = false;

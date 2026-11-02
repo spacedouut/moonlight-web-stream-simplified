@@ -786,6 +786,9 @@ pub async fn webrtc_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::bindings::StreamStatsClientboundMessage;
+    use bytes::BytesMut;
+    use webrtc::data_channel::DataChannelEvent;
 
     async fn wait_for_connected(handler: &WebRtcHandler) -> RTCPeerConnectionState {
         for _ in 0..100 {
@@ -917,6 +920,108 @@ mod tests {
             data_channel.label().await.expect("label"),
             "moonlight.control"
         );
+
+        offerer.close().await.expect("close offerer");
+        answerer.close().await.expect("close answerer");
+    }
+
+    /// The relay never reads the stats channel itself. If its events pile up, the webrtc
+    /// driver stops reading inbound SCTP and input from the browser goes silent while
+    /// video keeps flowing.
+    #[actix_web::test]
+    async fn input_keeps_flowing_after_many_stats_messages() {
+        let config = WebRtcConfig {
+            include_loopback_candidates: true,
+            ..Default::default()
+        };
+
+        let (offerer, offerer_handler, mut offerer_data_channels) = create_peer(
+            SettingEngineBuilder::new()
+                .with_include_loopback_candidate(true)
+                .with_network_types(vec![NetworkType::Udp4]),
+            SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
+        )
+        .await;
+        let (answerer, answerer_handler, mut answerer_data_channels) = create_peer(
+            create_setting_engine(&config),
+            SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
+        )
+        .await;
+
+        let keys = offerer
+            .create_data_channel("moonlight.control.keys", None)
+            .await
+            .expect("create data channel");
+
+        let offer = offerer.create_offer(None).await.expect("create offer");
+        offerer
+            .set_local_description(offer)
+            .await
+            .expect("set offerer local description");
+        let offer = gathered_description(&*offerer, &offerer_handler).await;
+        answerer
+            .set_remote_description(offer)
+            .await
+            .expect("set answerer remote description");
+        let answer = answerer.create_answer(None).await.expect("create answer");
+        answerer
+            .set_local_description(answer)
+            .await
+            .expect("set answerer local description");
+        let answer = gathered_description(&*answerer, &answerer_handler).await;
+        offerer
+            .set_remote_description(answer)
+            .await
+            .expect("set offerer remote description");
+
+        assert_eq!(
+            wait_for_connected(&answerer_handler).await,
+            RTCPeerConnectionState::Connected
+        );
+
+        // The browser side reads every channel, like the real client does.
+        spawn({
+            let keys = keys.clone();
+            async move { while keys.poll().await.is_some() {} }
+        });
+        spawn(async move {
+            while let Some(channel) = offerer_data_channels.recv().await {
+                spawn(async move { while channel.poll().await.is_some() {} });
+            }
+        });
+
+        let relay_keys = select! {
+            channel = answerer_data_channels.recv() => channel.expect("data channel"),
+            _ = sleep(Duration::from_secs(10)) => panic!("data channel never opened"),
+        };
+        let (on_message, mut messages) = mpsc::unbounded_channel();
+        spawn(async move {
+            while let Some(event) = relay_keys.poll().await {
+                if let DataChannelEvent::OnMessage(message) = event {
+                    let _ = on_message.send(message.data);
+                }
+            }
+        });
+
+        let stats = stats::StatsChannel::new(&*answerer)
+            .await
+            .expect("create stats channel");
+        for id in 0..1000 {
+            stats.send(StreamStatsClientboundMessage::Pong {
+                id,
+                relay_time_us: 0.0,
+            });
+            sleep(Duration::from_millis(2)).await;
+        }
+
+        keys.send(BytesMut::from(&b"input"[..]))
+            .await
+            .expect("send input");
+        let received = select! {
+            message = messages.recv() => message.expect("message"),
+            _ = sleep(Duration::from_secs(5)) => panic!("input never reached the relay"),
+        };
+        assert_eq!(&received[..], b"input");
 
         offerer.close().await.expect("close offerer");
         answerer.close().await.expect("close answerer");
