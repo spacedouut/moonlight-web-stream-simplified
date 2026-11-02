@@ -984,9 +984,17 @@ mod tests {
             let keys = keys.clone();
             async move { while keys.poll().await.is_some() {} }
         });
+        let (on_stats, mut stats_received) = mpsc::unbounded_channel();
         spawn(async move {
             while let Some(channel) = offerer_data_channels.recv().await {
-                spawn(async move { while channel.poll().await.is_some() {} });
+                let on_stats = on_stats.clone();
+                spawn(async move {
+                    while let Some(event) = channel.poll().await {
+                        if let DataChannelEvent::OnMessage(_) = event {
+                            let _ = on_stats.send(());
+                        }
+                    }
+                });
             }
         });
 
@@ -1012,6 +1020,12 @@ mod tests {
                 relay_time_us: 0.0,
             });
             sleep(Duration::from_millis(2)).await;
+        }
+        for _ in 0..1000 {
+            select! {
+                received = stats_received.recv() => received.expect("stats message"),
+                _ = sleep(Duration::from_secs(5)) => panic!("stats stopped arriving"),
+            }
         }
 
         keys.send(BytesMut::from(&b"input"[..]))
