@@ -6,13 +6,11 @@ use std::{
 use actix_web::web::Bytes;
 use moonlight_common::{
     crypto::rustcrypto::RustCryptoBackend,
-    high::{
-        MoonlightClientError,
-        tokio::{MoonlightHost, broadcast_magic_packet},
-    },
+    error::Error as MoonlightError,
+    high::tokio::{MoonlightHost, broadcast_magic_packet},
     http::{
         ClientIdentifier, ClientSecret, ServerIdentifier,
-        pair::{PairPin, PairingCryptoBackend, client::ClientPairingError},
+        pair::{PairPin, PairingCryptoBackend},
         server_info::ServerInfoResponse,
     },
 };
@@ -117,13 +115,10 @@ impl Host {
             .await
     }
 
-    fn is_offline<T>(
-        &self,
-        result: Result<T, MoonlightClientError>,
-    ) -> Result<Option<T>, AppError> {
+    fn is_offline<T>(&self, result: Result<T, MoonlightError>) -> Result<Option<T>, AppError> {
         match result {
             Ok(value) => Ok(Some(value)),
-            Err(MoonlightClientError::Offline) => Ok(None),
+            Err(MoonlightError::ConnectionFailed | MoonlightError::ConnectionTimeout) => Ok(None),
             Err(err) => Err(err.into()),
         }
     }
@@ -232,11 +227,8 @@ impl Host {
         let device_name = app.config.moonlight.pair_device_name.clone();
         let modify = self
             .use_request_client(&app, async |this, host| {
-                let (client_identifier, client_secret) = RustCryptoBackend
-                    .generate_client_identity()
-                    .map_err(|err| {
-                        MoonlightClientError::Pairing(ClientPairingError::Crypto(Box::new(err)))
-                    })?;
+                let (client_identifier, client_secret) =
+                    RustCryptoBackend.generate_client_identity()?;
                 host.pair(
                     &client_identifier,
                     &client_secret,
