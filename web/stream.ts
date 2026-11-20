@@ -1,4 +1,4 @@
-import { Api, getApi } from "./api"
+import { Api, apiGetHost, getApi } from "./api"
 import { StreamKeys } from "./api_bindings"
 import { Component } from "./component/index"
 import { SelectComponent } from "./component/input"
@@ -155,6 +155,8 @@ startApp()
 
 class ViewerApp implements Component {
     private api: Api
+    private hostId: number
+    private hostNamePromise: Promise<string | null> | null = null
 
     private sidebar: ViewerSidebar
 
@@ -181,6 +183,7 @@ class ViewerApp implements Component {
 
     constructor(api: Api, hostId: number, appId: number, options?: Partial<Settings>) {
         this.api = api
+        this.hostId = hostId
 
         const defaultSettings = getLocalStreamSettings(globalDefaultSettings())
         const settings = {
@@ -322,13 +325,24 @@ class ViewerApp implements Component {
         }
     }
 
+    private getHostName(): Promise<string | null> {
+        if (this.hostNamePromise == null) {
+            this.hostNamePromise = apiGetHost(this.api, { host_id: this.hostId })
+                .then(host => host.name)
+                .catch(() => null)
+        }
+
+        return this.hostNamePromise
+    }
+
     private async onInfo(event: InfoEvent) {
         const data = event.detail
 
         if (data.type == "app") {
             const appName = data.appName
+            const hostName = await this.getHostName()
 
-            document.title = `Stream: ${appName}`
+            document.title = `Streaming ${appName} on ${hostName ?? `host ${this.hostId}`}`
         } else if (data.type == "connectionComplete") {
             this.sidebar.onCapabilitiesChange(data.capabilities)
 
