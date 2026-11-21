@@ -26,7 +26,6 @@ use moonlight_common::stream::video::{
 use moonlight_common::stream::{
     AesIv, AesKey, EncryptionFlags, MoonlightStreamSettings, StreamingConfig,
 };
-use moonlight_common::webrtc::WebRTCParseError;
 use moonlight_common::webrtc::answer::WebRTCSessionAnswer;
 use moonlight_common::webrtc::header::WebRTCLinkHeader;
 use moonlight_common::webrtc::offer::WebRTCSessionOffer;
@@ -258,9 +257,9 @@ pub async fn webrtc_post(
 ) -> Result<HttpResponse, AppError> {
     debug!(req = ?req, session_description = ?session_description, "webrtc request");
 
-    let offer_sdp =
-        Session::parse(session_description.as_bytes()).map_err(WebRTCParseError::from)?;
-    let session = WebRTCSessionOffer::from_sdp(&offer_sdp)?;
+    let offer_sdp = Session::parse(session_description.as_bytes())
+        .map_err(|err| AppError::WebRTCParse(err.into()))?;
+    let session = WebRTCSessionOffer::from_sdp(&offer_sdp).map_err(AppError::WebRTCParse)?;
     debug!(moonlight_session = ?session, "moonlight session extensions", );
 
     let Some(host_id) = session.host_id else {
@@ -480,6 +479,8 @@ pub async fn webrtc_post(
             )
             .await?;
 
+        info!(config = ?config, "connecting to host");
+
         let moonlight_stream = match MoonlightStream::connect(
             config,
             settings,
@@ -491,7 +492,7 @@ pub async fn webrtc_post(
             Ok(value) => value,
             Err(err) => {
                 error!(error = %err, "failed to start stream");
-                return Err(err.into());
+                return Err(AppError::MoonlightStream(err));
             }
         };
 

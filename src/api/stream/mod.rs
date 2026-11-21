@@ -86,13 +86,15 @@ pub async fn start_moonlight_stream(
             MoonlightStreamSetup::launch_query_parameters(),
         )
         .await?;
+    info!(config = ?config, "connecting to host");
     let stream = MoonlightStream::connect(
         config,
         settings,
         Arc::new(RustCryptoBackend),
         VideoCapabilities::default(),
     )
-    .await?;
+    .await
+    .map_err(AppError::MoonlightStream)?;
     let audio_setup = stream.audio_setup();
     let video_setup = stream.video_setup();
     let response = WebSocketStreamResponse {

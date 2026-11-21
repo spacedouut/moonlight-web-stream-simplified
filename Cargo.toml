@@ -29,7 +29,7 @@ time = "0.3.47"
 
 # Moonlight
 # Make sure to keep the ubrn.config.yaml repo the same as this
-moonlight-common = { git = "https://github.com/spacedouut/moonlight-common-rust.git", rev = "b7869b4ab43f03edeb7a3e594e5d0ae2fec24c33", features = [
+moonlight-common = { git = "https://github.com/MrCreativ3001/moonlight-common-rust.git", rev = "ecc0d8e717fcf9e9dbc184ce000abb95dac8cdc5", features = [
     "tokio",
     "tokio-hyper",
     "rustcrypto",
@@ -38,8 +38,8 @@ moonlight-common = { git = "https://github.com/spacedouut/moonlight-common-rust.
 ], default-features = false }
 
 # WebRTC
-webrtc = "0.21.0-rc.2"
-rtc = "0.21.0-rc.2"
+webrtc = "0.21.1"
+rtc = "0.21.1"
 
 # Log
 log = { version = "0.4.28", features = ["serde"] }
@@ -76,8 +76,3 @@ windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
 too_many_arguments = "allow"
 unwrap_used = "warn"
 todo = "warn"
-
-[patch.crates-io]
-# Fork of 0.21.0-rc.2 whose driver drains queued SenderRtp events in a burst, so a
-# frame's RTP packets get flushed together (GSO) instead of one loop round + sendto each.
-webrtc = { git = "https://github.com/spacedouut/webrtc", rev = "23fb1ab8d6d0bee882f05fc139eaae9ef00d76c6" }

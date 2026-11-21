@@ -9,21 +9,14 @@ use std::{
 use actix_web::{HttpResponse, ResponseError, body::BoxBody, http::StatusCode};
 use hex::FromHexError;
 use moonlight_common::{
-    MoonlightError,
     crypto::rustcrypto::{RustCryptoBackend, RustCryptoError},
-    high::{MoonlightClientError, StreamConfigError},
+    error::Error as MoonlightError,
     http::{
-        ClientInfo, ParseError,
-        client::{
-            RequestError,
-            async_client::RequestClient as _,
-            tokio_hyper::{HyperError, TokioHyperClient},
-        },
+        ClientInfo,
+        client::{async_client::RequestClient as _, tokio_hyper::TokioHyperClient},
         pair::PairingCryptoBackend,
         server_info::{ServerInfoEndpoint, ServerInfoRequest},
     },
-    stream::tokio::MoonlightStreamError,
-    webrtc::WebRTCParseError,
 };
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
@@ -64,10 +57,8 @@ pub enum AppError {
     Unauthenticated,
     #[error("only the admin can do this")]
     AdminOnly,
-    #[error("the host doesn't support the given config: {0}")]
-    StreamConfig(#[from] StreamConfigError),
     #[error("failed to parse the given sdp: {0}")]
-    WebRTCParse(#[from] WebRTCParseError),
+    WebRTCParse(MoonlightError),
     #[error("rustcrypto error occurred: {0}")]
     RustCrypto(#[from] RustCryptoError),
     #[error("hex error occurred: {0}")]
@@ -75,9 +66,10 @@ pub enum AppError {
     #[error("io error: {0}")]
     Io(#[from] io::Error),
     #[error("moonlight error: {0}")]
-    Moonlight(#[from] MoonlightClientError),
-    #[error("moonlight error: {0}")]
-    MoonlightStream(#[from] MoonlightStreamError),
+    Moonlight(#[from] MoonlightError),
+    /// An error from connecting to or running the stream itself, after the host accepted it.
+    #[error("moonlight stream error: {0}")]
+    MoonlightStream(MoonlightError),
     #[error("webrtc: {0}")]
     WebRTC(#[from] webrtc::error::Error),
 }
@@ -93,7 +85,7 @@ pub struct ErrorDescription {
     pub message: String,
 }
 
-fn describe_client_error(err: &MoonlightClientError) -> ErrorDescription {
+fn describe_client_error(err: &MoonlightError) -> ErrorDescription {
     let not_paired = || {
         ErrorDescription {
         status: StatusCode::FORBIDDEN,
@@ -109,71 +101,54 @@ fn describe_client_error(err: &MoonlightClientError) -> ErrorDescription {
     };
 
     match err {
-        MoonlightClientError::Offline => host_unreachable(),
-        MoonlightClientError::NotPaired | MoonlightClientError::Unauthenticated => not_paired(),
-        MoonlightClientError::Moonlight(inner) => match inner {
-            MoonlightError::NotPaired => not_paired(),
-            MoonlightError::ConnectionAlreadyExists => ErrorDescription {
-                status: StatusCode::CONFLICT,
-                code: "host_busy",
-                message: "The host is busy streaming to another client. Stop that stream and try again.".into(),
-            },
-            MoonlightError::ConnectionFailed | MoonlightError::InstanceAquire => ErrorDescription {
-                status: StatusCode::BAD_GATEWAY,
-                code: "host_stream_refused",
-                message: "The host refused the stream connection. Check that the Moonlight ports aren't blocked by a firewall or VPN.".into(),
-            },
-            other => ErrorDescription {
-                status: StatusCode::BAD_GATEWAY,
-                code: "host_error",
-                message: format!("The host reported an error: {other}"),
-            },
+        MoonlightError::ConnectionFailed | MoonlightError::ConnectionTimeout => host_unreachable(),
+        MoonlightError::NotPaired | MoonlightError::Unauthenticated => not_paired(),
+        MoonlightError::ConnectionAlreadyExists => ErrorDescription {
+            status: StatusCode::CONFLICT,
+            code: "host_busy",
+            message: "The host is busy streaming to another client. Stop that stream and try again.".into(),
         },
-        MoonlightClientError::StreamConfig(config_err) => ErrorDescription {
+        MoonlightError::InstanceAquire => ErrorDescription {
+            status: StatusCode::BAD_GATEWAY,
+            code: "host_stream_refused",
+            message: "The host refused the stream connection. Check that the Moonlight ports aren't blocked by a firewall or VPN.".into(),
+        },
+        MoonlightError::SettingHdrNotSupported
+        | MoonlightError::Setting4kNotSupported
+        | MoonlightError::Setting4kNotSupportedCodecMissing
+        | MoonlightError::Setting4kNotSupportedUpdateGfe => ErrorDescription {
             status: StatusCode::BAD_REQUEST,
             code: "unsupported_stream_config",
-            message: format!("The host doesn't support this stream configuration: {config_err}"),
+            message: format!("The host doesn't support this stream configuration: {err}"),
         },
-        MoonlightClientError::Backend(backend) => {
-            let Some(hyper_err) = backend.downcast_ref::<HyperError>() else {
-                return ErrorDescription {
-                    status: StatusCode::BAD_GATEWAY,
-                    code: "host_request_failed",
-                    message: format!("Couldn't talk to the host: {backend}"),
-                };
-            };
-            match hyper_err {
-                // The host answered but reported a failure, e.g.
-                // "Failed to initialize video capture/encoding. Is a display connected and turned on?"
-                HyperError::Parse(ParseError::InvalidXmlStatusCode { message }) => {
-                    ErrorDescription {
-                        status: StatusCode::BAD_GATEWAY,
-                        code: "host_error",
-                        message: sunshine_error_hint(message.as_deref()),
-                    }
-                }
-                _ if hyper_err.is_encryption() => ErrorDescription {
-                    status: StatusCode::FORBIDDEN,
-                    code: "pairing_invalid",
-                    message: "The host rejected this device's certificate: it was probably unpaired. Re-pair and try again.".into(),
-                },
-                _ if hyper_err.is_connect() => host_unreachable(),
-                _ => ErrorDescription {
-                    status: StatusCode::BAD_GATEWAY,
-                    code: "host_request_failed",
-                    message: format!("Couldn't talk to the host: {hyper_err}"),
-                },
-            }
-        }
-        MoonlightClientError::Pairing(err) => ErrorDescription {
+        // The host answered but reported a failure, e.g.
+        // "Failed to initialize video capture/encoding. Is a display connected and turned on?"
+        MoonlightError::StatusCode { reason, .. } => ErrorDescription {
+            status: StatusCode::BAD_GATEWAY,
+            code: "host_error",
+            message: sunshine_error_hint((!reason.is_empty()).then_some(reason.as_str())),
+        },
+        MoonlightError::PairingFailed
+        | MoonlightError::PairingFailedWrongPin
+        | MoonlightError::PairingFailedAlreadyInProgress => ErrorDescription {
             status: StatusCode::FORBIDDEN,
             code: "pairing_failed",
             message: format!("Pairing with the host failed: {err}. Check the PIN shown on the host."),
         },
-        MoonlightClientError::Poisoned(_) => ErrorDescription {
+        MoonlightError::LockPoisoned => ErrorDescription {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "internal",
             message: "Relay error: the host client is in a broken state, restart the relay.".into(),
+        },
+        MoonlightError::Io(_) | MoonlightError::Other(_) => ErrorDescription {
+            status: StatusCode::BAD_GATEWAY,
+            code: "host_request_failed",
+            message: format!("Couldn't talk to the host: {err}"),
+        },
+        other => ErrorDescription {
+            status: StatusCode::BAD_GATEWAY,
+            code: "host_error",
+            message: format!("The host reported an error: {other}"),
         },
     }
 }
@@ -195,9 +170,9 @@ fn sunshine_error_hint(message: Option<&str>) -> String {
     }
 }
 
-fn describe_stream_error(err: &MoonlightStreamError) -> ErrorDescription {
+fn describe_stream_error(err: &MoonlightError) -> ErrorDescription {
     match err {
-        MoonlightStreamError::Io(io_err) => match io_err.kind() {
+        MoonlightError::Io(io_err) => match io_err.kind() {
             io::ErrorKind::ConnectionRefused
             | io::ErrorKind::TimedOut
             | io::ErrorKind::AddrNotAvailable
@@ -212,20 +187,10 @@ fn describe_stream_error(err: &MoonlightStreamError) -> ErrorDescription {
                 message: format!("The connection to the host's stream failed: {io_err}"),
             },
         },
-        MoonlightStreamError::ConnectionTimeout => ErrorDescription {
+        MoonlightError::ConnectionTimeout => ErrorDescription {
             status: StatusCode::BAD_GATEWAY,
             code: "stream_timeout",
             message: "Timed out connecting to the host's stream. The host is reachable but the streaming ports look blocked: check firewall and NAT forwarding for the Moonlight ports (UDP 47998-48010).".into(),
-        },
-        MoonlightStreamError::Setup(setup_err) => ErrorDescription {
-            status: StatusCode::BAD_GATEWAY,
-            code: "stream_setup_failed",
-            message: format!("The host accepted the stream but the stream setup failed: {setup_err}"),
-        },
-        MoonlightStreamError::Closed => ErrorDescription {
-            status: StatusCode::GONE,
-            code: "stream_closed",
-            message: "The stream is already closed.".into(),
         },
         other => ErrorDescription {
             status: StatusCode::BAD_GATEWAY,
@@ -283,11 +248,6 @@ impl AppError {
                 status: StatusCode::FORBIDDEN,
                 code: "admin_only",
                 message: "Only the relay admin can do this.".into(),
-            },
-            Self::StreamConfig(config_err) => ErrorDescription {
-                status: StatusCode::BAD_REQUEST,
-                code: "unsupported_stream_config",
-                message: format!("The host doesn't support this stream configuration: {config_err}"),
             },
             Self::WebRTCParse(parse_err) => ErrorDescription {
                 status: StatusCode::BAD_REQUEST,
@@ -436,8 +396,7 @@ impl App {
 
     pub async fn host_add(&self, address: String, http_port: u16) -> Result<Host, AppError> {
         let unique_id = self.client_unique_id().await?;
-        let client = RequestClient::with_defaults()
-            .map_err(|err| MoonlightClientError::Backend(Box::new(err)))?;
+        let client = RequestClient::with_defaults()?;
         let info = match client
             .send_http::<ServerInfoEndpoint>(
                 ClientInfo {
@@ -450,8 +409,10 @@ impl App {
             .await
         {
             Ok(info) => info,
-            Err(err) if err.is_connect() => return Err(AppError::HostNotFound),
-            Err(err) => return Err(MoonlightClientError::Backend(Box::new(err)).into()),
+            Err(MoonlightError::ConnectionFailed | MoonlightError::ConnectionTimeout) => {
+                return Err(AppError::HostNotFound);
+            }
+            Err(err) => return Err(err.into()),
         };
         let host = self
             .inner

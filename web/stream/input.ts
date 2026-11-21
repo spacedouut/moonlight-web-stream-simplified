@@ -1052,6 +1052,7 @@ export class StreamInput {
             rumble: false,
             triggerRumble: false,
             touchpad: false,
+            dualTouchpad: false,
             accel: false,
             gyro: false,
             batteryState: false,
