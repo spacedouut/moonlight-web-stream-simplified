@@ -44,7 +44,7 @@ jobs:
 
       # Cargo Shear
       - name: Install cargo-shear
-        run: cargo binstall --force --no-confirm cargo-shear
+        run: cargo binstall --force --no-confirm cargo-shear@1.14.0
       - name: Cargo Shear
         run: cargo shear
   
