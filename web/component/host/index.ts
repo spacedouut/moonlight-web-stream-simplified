@@ -219,7 +219,7 @@ export class Host implements Component {
                 host_id: this.getHostId()
             })
         } catch (error) {
-            await showMessage(`Couldn't send the wake-up packet: ${describeError(error)}`)
+            await showMessage(`Couldn't wake the host: ${describeError(error)}`)
             return
         }
 
@@ -254,7 +254,7 @@ export class Host implements Component {
             messageAbort.abort()
 
             if (!resultResponse) {
-                await showMessage("Pairing failed: the relay ended the exchange without a result.")
+                await showMessage("Pairing didn't finish. Try again.")
                 return
             } else if ("PairError" in resultResponse) {
                 await showMessage(`Couldn't pair with the host: ${resultResponse.PairError}`)

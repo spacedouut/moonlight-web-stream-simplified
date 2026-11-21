@@ -75,7 +75,7 @@ export class WebTransportTransport implements Transport {
             void this.readUnidirectionalStreams()
             void this.readDatagrams()
         } catch {
-            this.connectFailure = "Couldn't open a WebTransport session to the relay. Check that WebTransport is enabled in the relay config and that UDP/QUIC to the relay's WebTransport port isn't blocked."
+            this.connectFailure = "Couldn't connect over WebTransport. Make sure it's turned on in the server config and that UDP traffic to its port isn't blocked."
             await this.close()
         }
     }

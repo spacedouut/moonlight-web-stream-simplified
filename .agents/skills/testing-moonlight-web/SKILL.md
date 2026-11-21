@@ -36,7 +36,7 @@ A `ThreadingHTTPServer` is enough to fake the Moonlight HTTP API:
 - Stream modal without clicking a game: open `/stream.html?hostId=<id>&appId=<n>` directly — same URL the game tile opens via `window.open`.
 - Query params parsed by stream.html: `hostId`, `appId`, `dataTransport` (`auto|webrtc|websocket|webtransport`), `bitrate`, `fps`, `hdr`, `videoSize`, `videoSizeCustom.width/height`, `language`. Note it's `dataTransport`, NOT `transport`.
 - With `dataTransport=webtransport` and WebTransport disabled in config, `apiWebTransportConfig` 404s, `tryWebTransportTransport()` returns `failednoconnect`, and the fatal modal shows "The relay isn't exposing or accepting your selected transport (WebTransport). Maybe it's disabled in the relay config?"
-- Host tile click behavior: offline host (server_state null) → context menu (Send Wake Up Packet / Reload / Remove Host); online+paired → opens games; online+unpaired → starts pairing (PIN modal first, error message on failure).
+- Host tile click behavior: offline host (server_state null) → context menu (Wake Host / Reload / Remove Host); online+paired → opens games; online+unpaired → starts pairing (PIN modal first, error message on failure).
 - Notifications log via `console.error(message, errorObject)` (notification.ts) — error-level console entries mirroring shown notifications are intentional, not unhandled rejections. Failed HTTP fetches always log "Failed to load resource" in DevTools regardless of handling.
 
 ## Devin Secrets Needed
