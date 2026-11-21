@@ -61,7 +61,17 @@ export class Host implements Component {
         this.updateOverlay()
     }
 
-    async forceFetch() {
+    private pendingFetch: Promise<void> | null = null
+
+    forceFetch(): Promise<void> {
+        if (!this.pendingFetch) {
+            this.pendingFetch = this.fetchHost().finally(() => {
+                this.pendingFetch = null
+            })
+        }
+        return this.pendingFetch
+    }
+    private async fetchHost() {
         try {
             const newCache = await apiGetHost(this.api, {
                 host_id: this.hostId,
@@ -83,6 +93,11 @@ export class Host implements Component {
     }
 
     private async onClick(event: MouseEvent) {
+        if (this.cache?.server_state == null && !this.stateKnown) {
+            // Still checking (e.g. right after a reload): ask the host now instead of treating it as offline
+            await this.forceFetch()
+        }
+
         if (this.cache?.server_state == null) {
             this.onContextMenu(event)
         } else if (this.cache?.paired == "Paired") {
@@ -285,7 +300,10 @@ export class Host implements Component {
             return
         }
 
-        if (stateKnown !== undefined) {
+        if (stateKnown === false && this.cache != null && this.stateKnown) {
+            // Cached-only data has no live state: keep the last checked state until a fresh one arrives
+            host = { ...host, server_state: this.cache.server_state }
+        } else if (stateKnown !== undefined) {
             this.stateKnown = stateKnown
         }
 
