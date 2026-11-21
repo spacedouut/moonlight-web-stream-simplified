@@ -62,7 +62,7 @@ export class WebSocketTransport implements Transport {
     // -- Web Socket Events
     private onError() {
         if (!this.wasConnected) {
-            this.logger?.debug("Couldn't reach the relay over a WebSocket. Is the relay running and reachable?")
+            this.logger?.debug("Couldn't reach the server over WebSocket. Make sure it's running.")
         }
         this.close()
     }
@@ -170,7 +170,7 @@ export class WebSocketTransport implements Transport {
 
     private onClose(event: CloseEvent) {
         if (!this.wasConnected && !this.serverError && event.reason) {
-            this.logger?.debug(`The relay closed the WebSocket: ${event.reason}`)
+            this.logger?.debug(`The server closed the WebSocket: ${event.reason}`)
         }
         this.close()
     }

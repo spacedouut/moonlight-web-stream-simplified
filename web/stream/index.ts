@@ -186,12 +186,12 @@ export class Stream implements Component {
                 return
             }
             if (!wasConnected) {
-                this.debugLog("Failed to connect to the host", { type: "fatal" })
-                this.debugLog(this.failureReason ?? "Tried all configured transport options but none connected. Check that the relay is running and reachable, and that the host is on with Sunshine active.", { type: "fatalDescription" })
+                this.debugLog("Couldn't connect to the host", { type: "fatal" })
+                this.debugLog(this.failureReason ?? "Make sure the server is running and the host is on with Sunshine running.", { type: "fatalDescription" })
                 return
             }
 
-            this.debugLog("Connection lost, reconnecting...", { type: "ifErrorDescription" })
+            this.debugLog("Connection lost. Reconnecting...", { type: "ifErrorDescription" })
             await wait(FALLBACK_RECONNECT_DELAY_MS)
         }
     }
@@ -206,7 +206,7 @@ export class Stream implements Component {
             shutdownReason = await this.tryWebRTCTransport()
 
             if (shutdownReason == "failednoconnect") {
-                this.debugLog("Failed to establish WebRTC connection. Falling back to Web Socket transport.", { type: "ifErrorDescription" })
+                this.debugLog("WebRTC didn't connect. Trying WebSocket instead.", { type: "ifErrorDescription" })
                 shutdownReason = await this.tryWebSocketTransport()
             }
         } else if (desiredTransport == "webrtc") {
@@ -255,7 +255,7 @@ export class Stream implements Component {
         const dataCodecs = await this.queryVideoCodecs("data")
 
         if (!hasAnyCodec(codecHint)) {
-            this.debugLog("Couldn't find any supported video format. Change the codec option to H264 in the settings if you're unsure which codecs are supported.", { type: "fatalDescription" })
+            this.debugLog("Your browser can't play the selected video format. Set Video Codec to H264 in the settings.", { type: "fatalDescription" })
             return null
         }
 
@@ -284,7 +284,7 @@ export class Stream implements Component {
                 this.createTransportOptions(),
             ])
         } catch (error) {
-            this.debugLog(`Couldn't prepare the WebRTC connection: ${describeError(error)}`, { type: "ifErrorDescription" })
+            this.debugLog(`WebRTC setup failed: ${describeError(error)}`, { type: "ifErrorDescription" })
             this.failureReason = describeError(error)
             return "failednoconnect"
         }
@@ -347,8 +347,8 @@ export class Stream implements Component {
             onTimeout,
         ])
         if (typeof connectData == "string") {
-            this.failureReason = "The relay accepted the WebRTC offer but the peer connection couldn't be established. This is usually a NAT or firewall problem (check the relay's webrtc config and that UDP is reachable)."
-            this.debugLog(`WebRTC connection failed before it was established (${connectData}). Falling back if another transport is configured.`, { type: "ifErrorDescription" })
+            this.failureReason = "WebRTC couldn't connect. This is usually a firewall or NAT problem: check the server's WebRTC settings and that UDP traffic isn't blocked."
+            this.debugLog(`WebRTC didn't connect (${connectData}).`, { type: "ifErrorDescription" })
             await transport.close()
             // connection failed
             return connectData
@@ -388,7 +388,7 @@ export class Stream implements Component {
             await transport.startStream(options)
         } catch (error) {
             this.failureReason = transport.failureReason ?? "Couldn't reach the relay over a WebSocket. Is the relay running and reachable?"
-            this.debugLog(`Couldn't start the stream over a WebSocket: ${describeError(error)}`, { type: "ifErrorDescription" })
+            this.debugLog(`WebSocket connection failed: ${describeError(error)}`, { type: "ifErrorDescription" })
             await transport.close()
             return "failednoconnect"
         }
@@ -426,7 +426,7 @@ export class Stream implements Component {
             } else {
                 this.failureReason = describeError(error)
             }
-            this.debugLog(`Couldn't get the WebTransport configuration from the relay: ${describeError(error)}`, { type: "ifErrorDescription" })
+            this.debugLog(`Couldn't get WebTransport settings from the server: ${describeError(error)}`, { type: "ifErrorDescription" })
             return "failednoconnect" as const
         }
 
@@ -442,7 +442,7 @@ export class Stream implements Component {
             onConnect = new Promise<TransportConnectData>(resolve => transport.onconnect = resolve)
             onClose = new Promise<TransportShutdown>(resolve => transport.onclose = resolve)
         } catch (error) {
-            this.debugLog(`Couldn't create the WebTransport transport: ${describeError(error)}`, { type: "ifErrorDescription" })
+            this.debugLog(`Couldn't set up WebTransport: ${describeError(error)}`, { type: "ifErrorDescription" })
             this.failureReason = describeError(error)
             return "failednoconnect" as const
         }
@@ -550,10 +550,10 @@ export class Stream implements Component {
         const droppedDelta = framesDropped != null && last.framesDropped != null ? framesDropped - last.framesDropped : 0
 
         if (lostDelta > 0 && (receivedDelta == 0 || lostDelta / Math.max(receivedDelta, 1) > 0.02)) {
-            this.debugLog(`Connection quality warning: ${lostDelta} packets lost in the last 2 seconds`, { type: "ifErrorDescription" })
+            this.debugLog(`Poor connection: ${lostDelta} packets lost in the last 2 seconds`, { type: "ifErrorDescription" })
             this.lastWarningTime = now
         } else if (droppedDelta > 30) {
-            this.debugLog(`Connection quality warning: ${droppedDelta} frames dropped in the last 2 seconds`, { type: "ifErrorDescription" })
+            this.debugLog(`Video is stuttering: ${droppedDelta} frames dropped in the last 2 seconds`, { type: "ifErrorDescription" })
             this.lastWarningTime = now
         }
     }
@@ -847,7 +847,7 @@ export class Stream implements Component {
                     this.eventTarget.dispatchEvent(new CustomEvent("stream-info", { detail: { type: "streamEnded" } }))
                 } else {
                     this.debugLog("The host ended the stream", { type: "fatal" })
-                    this.debugLog(`Termination code 0x${reason.inner[0].toString(16)}`, { type: "fatalDescription" })
+                    this.debugLog(`Error code: 0x${reason.inner[0].toString(16)}`, { type: "fatalDescription" })
                 }
                 return
             }

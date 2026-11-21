@@ -324,7 +324,7 @@ class MainApp implements Component {
                 this.gameList?.forceFetch()
             ])
         } catch (error) {
-            showNotification(`Couldn't reach the relay: ${describeError(error)}`)
+            showNotification(`Couldn't reach the server: ${describeError(error)}`)
         }
 
         if (this.currentDisplay == "games"

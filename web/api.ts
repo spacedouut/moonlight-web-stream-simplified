@@ -131,16 +131,16 @@ export class FetchError extends Error {
 
     constructor(type: "timeout" | "failed" | "unknown", endpoint: string, method: string, responseOrError?: Response | any, apiError?: ApiErrorBody | null) {
         if (type == "timeout") {
-            super(`failed to fetch ${method} at ${endpoint} because of timeout`)
+            super(`The server didn't respond in time (${method} ${endpoint})`)
         } else if (type == "failed") {
             const response = responseOrError as Response
-            super(`failed to fetch ${method} at ${endpoint} with code ${response?.status} ${apiError ? `because of ${apiError.message}` : ""}`)
+            super(apiError ? apiError.message : `Request failed with status ${response?.status} (${method} ${endpoint})`)
 
             this.response = response
             this.apiError = apiError
         } else if (type == "unknown") {
             const error = responseOrError as Error
-            super(`failed to fetch ${method} at ${endpoint} because of ${error}`)
+            super(`Couldn't reach the server (${method} ${endpoint}): ${error}`)
         }
     }
 

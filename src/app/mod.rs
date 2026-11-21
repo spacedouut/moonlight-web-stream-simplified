@@ -86,18 +86,15 @@ pub struct ErrorDescription {
 }
 
 fn describe_client_error(err: &MoonlightError) -> ErrorDescription {
-    let not_paired = || {
-        ErrorDescription {
+    let not_paired = || ErrorDescription {
         status: StatusCode::FORBIDDEN,
         code: "not_paired",
-        message: "This device isn't paired with the host. Pair it first; if it was paired before, the host may have forgotten it so pair again.".into(),
-    }
+        message: "This host isn't paired. Pair it and try again.".into(),
     };
     let host_unreachable = || ErrorDescription {
         status: StatusCode::BAD_GATEWAY,
         code: "host_unreachable",
-        message: "Couldn't reach Sunshine. Make sure the host is on and Sunshine is running."
-            .into(),
+        message: "Couldn't reach the host. Make sure it's on and Sunshine is running.".into(),
     };
 
     match err {
@@ -106,12 +103,15 @@ fn describe_client_error(err: &MoonlightError) -> ErrorDescription {
         MoonlightError::ConnectionAlreadyExists => ErrorDescription {
             status: StatusCode::CONFLICT,
             code: "host_busy",
-            message: "The host is busy streaming to another client. Stop that stream and try again.".into(),
+            message:
+                "The host is already streaming to another device. Stop that stream and try again."
+                    .into(),
         },
         MoonlightError::InstanceAquire => ErrorDescription {
             status: StatusCode::BAD_GATEWAY,
             code: "host_stream_refused",
-            message: "The host refused the stream connection. Check that the Moonlight ports aren't blocked by a firewall or VPN.".into(),
+            message: "The host refused the stream. Check that a firewall or VPN isn't blocking it."
+                .into(),
         },
         MoonlightError::SettingHdrNotSupported
         | MoonlightError::Setting4kNotSupported
@@ -119,7 +119,7 @@ fn describe_client_error(err: &MoonlightError) -> ErrorDescription {
         | MoonlightError::Setting4kNotSupportedUpdateGfe => ErrorDescription {
             status: StatusCode::BAD_REQUEST,
             code: "unsupported_stream_config",
-            message: format!("The host doesn't support this stream configuration: {err}"),
+            message: format!("The host doesn't support these stream settings: {err}"),
         },
         // The host answered but reported a failure, e.g.
         // "Failed to initialize video capture/encoding. Is a display connected and turned on?"
@@ -133,12 +133,12 @@ fn describe_client_error(err: &MoonlightError) -> ErrorDescription {
         | MoonlightError::PairingFailedAlreadyInProgress => ErrorDescription {
             status: StatusCode::FORBIDDEN,
             code: "pairing_failed",
-            message: format!("Pairing with the host failed: {err}. Check the PIN shown on the host."),
+            message: format!("Pairing failed: {err}. Check the PIN and try again."),
         },
         MoonlightError::LockPoisoned => ErrorDescription {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "internal",
-            message: "Relay error: the host client is in a broken state, restart the relay.".into(),
+            message: "Something went wrong on the server. Restart it and try again.".into(),
         },
         MoonlightError::Io(_) | MoonlightError::Other(_) => ErrorDescription {
             status: StatusCode::BAD_GATEWAY,
@@ -157,16 +157,16 @@ fn describe_client_error(err: &MoonlightError) -> ErrorDescription {
 /// actionable message. Unknown messages are passed through verbatim.
 fn sunshine_error_hint(message: Option<&str>) -> String {
     let Some(message) = message else {
-        return "Sunshine rejected the request.".into();
+        return "The host rejected the request.".into();
     };
     let lower = message.to_lowercase();
     if lower.contains("video capture") || lower.contains("encoding") || lower.contains("display") {
-        "Sunshine failed to start encoding. Make sure the host's display is connected and on."
+        "The host couldn't start the video. Make sure its display is connected and turned on."
             .into()
     } else if lower.contains("authorized") || lower.contains("certificate") {
-        "The host rejected this device's certificate: it may have been unpaired. Re-pair and try again.".into()
+        "The host no longer recognizes this device. Pair it again.".into()
     } else {
-        format!("Sunshine reported an error: {message}")
+        format!("The host reported an error: {message}")
     }
 }
 
@@ -179,23 +179,23 @@ fn describe_stream_error(err: &MoonlightError) -> ErrorDescription {
             | io::ErrorKind::NotConnected => ErrorDescription {
                 status: StatusCode::BAD_GATEWAY,
                 code: "stream_unreachable",
-                message: "The host accepted the stream but the streaming ports are unreachable. Check that the Moonlight ports (TCP 47984, 47989, 48010 and UDP 47998-48010) aren't blocked by a firewall or VPN.".into(),
+                message: "Couldn't connect to the stream. A firewall or VPN may be blocking the streaming ports (TCP 47984, 47989, 48010 and UDP 47998-48010).".into(),
             },
             _ => ErrorDescription {
                 status: StatusCode::BAD_GATEWAY,
                 code: "stream_failed",
-                message: format!("The connection to the host's stream failed: {io_err}"),
+                message: format!("The stream connection failed: {io_err}"),
             },
         },
         MoonlightError::ConnectionTimeout => ErrorDescription {
             status: StatusCode::BAD_GATEWAY,
             code: "stream_timeout",
-            message: "Timed out connecting to the host's stream. The host is reachable but the streaming ports look blocked: check firewall and NAT forwarding for the Moonlight ports (UDP 47998-48010).".into(),
+            message: "Connecting to the stream timed out. A firewall or router may be blocking the streaming ports (UDP 47998-48010).".into(),
         },
         other => ErrorDescription {
             status: StatusCode::BAD_GATEWAY,
             code: "stream_failed",
-            message: format!("The connection to the host's stream failed: {other}"),
+            message: format!("The stream connection failed: {other}"),
         },
     }
 }
@@ -207,12 +207,12 @@ impl AppError {
             Self::AppDestroyed => ErrorDescription {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 code: "internal",
-                message: "The relay is restarting. Try again in a moment.".into(),
+                message: "The server is restarting. Try again in a moment.".into(),
             },
             Self::HostNotFound => ErrorDescription {
                 status: StatusCode::NOT_FOUND,
                 code: "host_not_found",
-                message: "The relay doesn't know this host.".into(),
+                message: "Host not found. It may have been removed.".into(),
             },
             Self::HostPaired => ErrorDescription {
                 status: StatusCode::CONFLICT,
@@ -222,49 +222,49 @@ impl AppError {
             Self::HostNotPaired => ErrorDescription {
                 status: StatusCode::FORBIDDEN,
                 code: "not_paired",
-                message: "This device isn't paired with the host. Pair it first.".into(),
+                message: "This host isn't paired. Pair it first.".into(),
             },
             Self::WebRtcClientCodecNotSupported => ErrorDescription {
                 status: StatusCode::BAD_REQUEST,
                 code: "codec_unsupported",
-                message: "This browser doesn't support any video codec the host can use. Try selecting H264 in the settings.".into(),
+                message: "Your browser can't play any video format the host supports. Try setting Video Codec to H264.".into(),
             },
             Self::StreamClosed => ErrorDescription {
                 status: StatusCode::NOT_FOUND,
                 code: "stream_closed",
-                message: "The stream is already closed.".into(),
+                message: "This stream has already ended.".into(),
             },
             Self::WebTransportDisabled => ErrorDescription {
                 status: StatusCode::NOT_FOUND,
                 code: "transport_disabled",
-                message: "The relay isn't exposing WebTransport. It may be disabled in the relay config.".into(),
+                message: "WebTransport is turned off on the server. Choose a different Data Transport in the settings.".into(),
             },
             Self::Unauthenticated => ErrorDescription {
                 status: StatusCode::UNAUTHORIZED,
                 code: "unauthenticated",
-                message: "The relay expects a signed-in user from its forward-auth proxy but the request had none. Check the proxy's auth setup.".into(),
+                message: "You're not signed in. If you run this server, check your login proxy setup.".into(),
             },
             Self::AdminOnly => ErrorDescription {
                 status: StatusCode::FORBIDDEN,
                 code: "admin_only",
-                message: "Only the relay admin can do this.".into(),
+                message: "Only an admin can do this.".into(),
             },
             Self::WebRTCParse(parse_err) => ErrorDescription {
                 status: StatusCode::BAD_REQUEST,
                 code: "bad_request",
-                message: format!("The relay couldn't parse the WebRTC offer: {parse_err}"),
+                message: format!("The server couldn't read the connection request: {parse_err}"),
             },
             Self::Moonlight(err) => describe_client_error(err),
             Self::MoonlightStream(err) => describe_stream_error(err),
             Self::WebRTC(err) => ErrorDescription {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 code: "webrtc_relay_error",
-                message: format!("The relay hit a WebRTC error: {err}"),
+                message: format!("WebRTC error on the server: {err}"),
             },
             _ => ErrorDescription {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 code: "internal",
-                message: format!("Relay error: {self}"),
+                message: format!("Server error: {self}"),
             },
         }
     }
