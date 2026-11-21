@@ -387,7 +387,7 @@ export class Stream implements Component {
         try {
             await transport.startStream(options)
         } catch (error) {
-            this.failureReason = transport.failureReason ?? "Couldn't reach the relay over a WebSocket. Is the relay running and reachable?"
+            this.failureReason = transport.failureReason ?? "Couldn't reach the server over WebSocket. Make sure it's running."
             this.debugLog(`WebSocket connection failed: ${describeError(error)}`, { type: "ifErrorDescription" })
             await transport.close()
             return "failednoconnect"
@@ -401,7 +401,7 @@ export class Stream implements Component {
         ])
 
         if (typeof connectData == "string") {
-            this.failureReason = transport.failureReason ?? "The relay closed the WebSocket before the stream could start."
+            this.failureReason = transport.failureReason ?? "The server closed the connection before the stream started."
             this.debugLog(`web socket connection failed: ${connectData}`)
             await transport.close()
             // connection failed
@@ -422,7 +422,7 @@ export class Stream implements Component {
             config = await apiWebTransportConfig(this.api)
         } catch (error) {
             if (error instanceof FetchError && error.getResponse()?.status == 404) {
-                this.failureReason = "The relay isn't exposing or accepting your selected transport (WebTransport). Maybe it's disabled in the relay config?"
+                this.failureReason = "WebTransport is turned off on the server. Choose a different Data Transport in the settings."
             } else {
                 this.failureReason = describeError(error)
             }
@@ -459,7 +459,7 @@ export class Stream implements Component {
         this.setTransport(transport)
         const connectData = await Promise.race([onConnect, onClose])
         if (typeof connectData == "string") {
-            this.failureReason = transport.failureReason ?? "The relay's WebTransport session ended before the stream could start."
+            this.failureReason = transport.failureReason ?? "The server closed the connection before the stream started."
             await transport.close()
             return connectData
         }
