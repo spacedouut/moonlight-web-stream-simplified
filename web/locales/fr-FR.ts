@@ -95,7 +95,7 @@ export const frFr: Translations = {
         controllerDisabled: "Contrôleur (HTTPS requis)",
         invertAB: "Inverser A et B",
         invertXY: "Inverser X et Y",
-        overrideControllerInterval: "Intervalle de mise à jour du contrôleur personnalisé",
+        overrideControllerInterval: "Intervalle personnalisé de mise à jour du contrôleur",
         other: "Autre",
         language: "Langue",
         renderMode: "Mode de rendu",

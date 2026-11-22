@@ -95,7 +95,7 @@ export const ptBR: Translations = {
         controllerDisabled: "Controle (requer HTTPS)",
         invertAB: "Inverter A e B",
         invertXY: "Inverter X e Y",
-        overrideControllerInterval: "Intervalo de Atualização do Controle Personalizado",
+        overrideControllerInterval: "Intervalo Personalizado de Atualização do Controle",
         other: "Outros",
         language: "Idioma",
         renderMode: "Modo de Renderização",
