@@ -123,6 +123,15 @@ fn describe_client_error(err: &MoonlightError) -> ErrorDescription {
         },
         // The host answered but reported a failure, e.g.
         // "Failed to initialize video capture/encoding. Is a display connected and turned on?"
+        // The host no longer trusts this device's certificate (it was unpaired on the host), e.g.
+        // "The client is not authorized. Certificate verification failed."
+        MoonlightError::StatusCode { reason, .. } if is_certificate_rejection(reason) => {
+            ErrorDescription {
+                status: StatusCode::FORBIDDEN,
+                code: "pairing_invalid",
+                message: "The host no longer recognizes this device. Pair it again.".into(),
+            }
+        }
         MoonlightError::StatusCode { reason, .. } => ErrorDescription {
             status: StatusCode::BAD_GATEWAY,
             code: "host_error",
@@ -163,11 +172,15 @@ fn sunshine_error_hint(message: Option<&str>) -> String {
     if lower.contains("video capture") || lower.contains("encoding") || lower.contains("display") {
         "The host couldn't start the video. Make sure its display is connected and turned on."
             .into()
-    } else if lower.contains("authorized") || lower.contains("certificate") {
-        "The host no longer recognizes this device. Pair it again.".into()
     } else {
         format!("The host reported an error: {message}")
     }
+}
+
+/// Whether a host `status_message` says it rejected this device's client certificate.
+fn is_certificate_rejection(reason: &str) -> bool {
+    let lower = reason.to_lowercase();
+    lower.contains("authorized") || lower.contains("certificate")
 }
 
 fn describe_stream_error(err: &MoonlightError) -> ErrorDescription {
@@ -491,5 +504,67 @@ impl App {
             .await
             .remove(ticket)?;
         (issued.elapsed() < WEB_TRANSPORT_TICKET_TTL).then_some(user)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(code: i32, reason: &str) -> MoonlightError {
+        MoonlightError::StatusCode {
+            code,
+            reason: reason.into(),
+        }
+    }
+
+    #[test]
+    fn rejected_certificate_asks_to_pair_again() {
+        let description = describe_client_error(&status(
+            401,
+            "The client is not authorized. Certificate verification failed.",
+        ));
+        assert_eq!(description.code, "pairing_invalid");
+        assert_eq!(description.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            description.message,
+            "The host no longer recognizes this device. Pair it again."
+        );
+    }
+
+    #[test]
+    fn other_host_status_errors_stay_host_error() {
+        let description = describe_client_error(&status(500, "Something broke"));
+        assert_eq!(description.code, "host_error");
+        assert_eq!(description.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            description.message,
+            "The host reported an error: Something broke"
+        );
+
+        let description = describe_client_error(&status(
+            503,
+            "Failed to initialize video capture/encoding. Is a display connected and turned on?",
+        ));
+        assert_eq!(description.code, "host_error");
+
+        let description = describe_client_error(&status(500, ""));
+        assert_eq!(description.code, "host_error");
+        assert_eq!(description.message, "The host rejected the request.");
+    }
+
+    #[test]
+    fn existing_client_errors_keep_their_codes() {
+        let cases = [
+            (MoonlightError::ConnectionFailed, "host_unreachable"),
+            (MoonlightError::ConnectionTimeout, "host_unreachable"),
+            (MoonlightError::NotPaired, "not_paired"),
+            (MoonlightError::Unauthenticated, "not_paired"),
+            (MoonlightError::PairingFailedWrongPin, "pairing_failed"),
+            (MoonlightError::ConnectionAlreadyExists, "host_busy"),
+        ];
+        for (err, code) in cases {
+            assert_eq!(describe_client_error(&err).code, code, "{err}");
+        }
     }
 }

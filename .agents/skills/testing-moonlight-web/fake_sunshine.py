@@ -14,6 +14,13 @@ restarting:
   ok_pair          -> /pair returns 200 (weak fake of the pairing exchange)
   ok_launch        -> /launch returns 200 (default: it 500s like a host that
                       can't initialize video capture/encoding)
+  reject_cert      -> every HTTPS endpoint answers 401 "The client is not
+                      authorized. Certificate verification failed.", the way
+                      Sunshine does for a client it no longer has paired
+
+--client-ca <pem> makes the TLS handshake itself require a client certificate
+signed by that CA; pass an unrelated cert to reject the relay's certificate at
+the TLS layer instead.
 
 Usage:
   python3 fake_sunshine.py --http-port 47989 --https-port 47984 \
@@ -40,8 +47,8 @@ def xml_ok(children: str) -> bytes:
     return f'<?xml version="1.0" encoding="utf-16"?><root status_code="200">{children}</root>'.encode()
 
 
-def xml_err(message: str) -> bytes:
-    return f'<?xml version="1.0" encoding="utf-16"?><root status_code="500" status_message="{message}"></root>'.encode()
+def xml_err(message: str, code: int = 500) -> bytes:
+    return f'<?xml version="1.0" encoding="utf-16"?><root status_code="{code}" status_message="{message}"></root>'.encode()
 
 
 def serverinfo(https_port: int, paired: bool) -> bytes:
@@ -68,7 +75,9 @@ def applist() -> bytes:
     )
 
 
-def handle(path: str, https_port: int, paired: bool) -> bytes:
+def handle(path: str, https_port: int, paired: bool, https: bool = False) -> bytes:
+    if https and flag("reject_cert"):
+        return xml_err("The client is not authorized. Certificate verification failed.", 401)
     if path.startswith("/serverinfo"):
         if flag("fail_serverinfo"):
             return xml_err("serverinfo broken for test")
@@ -94,11 +103,11 @@ def handle(path: str, https_port: int, paired: bool) -> bytes:
     return xml_err("unknown endpoint")
 
 
-def make_handler(https_port: int, paired: bool):
+def make_handler(https_port: int, paired: bool, https: bool = False):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
             try:
-                body = handle(self.path.split("?")[0] + ("?" in self.path and "?" or ""), https_port, paired)
+                body = handle(self.path.split("?")[0] + ("?" in self.path and "?" or ""), https_port, paired, https)
                 self.send_response(200)
             except Exception as e:  # keep the fake alive on handler bugs
                 body = xml_err(f"fake sunshine error: {e}")
@@ -122,6 +131,7 @@ def main():
                    help="second plain-HTTP /serverinfo listener (e.g. 48989) that always reports PairStatus=0, for an unpaired host entry")
     p.add_argument("--cert", required=True, help="PEM cert for HTTPS; must equal pair_info.server_certificate injected into data.json")
     p.add_argument("--key", required=True)
+    p.add_argument("--client-ca", help="require a client certificate signed by this CA in the TLS handshake")
     p.add_argument("--flags-dir", default="/tmp/fakesun-flags")
     args = p.parse_args()
 
@@ -140,7 +150,10 @@ def main():
 
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(args.cert, args.key)
-    httpsd = ThreadingHTTPServer(("127.0.0.1", args.https_port), make_handler(args.https_port, True))
+    if args.client_ca:
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.load_verify_locations(args.client_ca)
+    httpsd = ThreadingHTTPServer(("127.0.0.1", args.https_port), make_handler(args.https_port, True, https=True))
     httpsd.socket = ctx.wrap_socket(httpsd.socket, server_side=True)
     print(f"[fakesun] HTTPS on 127.0.0.1:{args.https_port}  flags: {FLAGS}")
     httpsd.serve_forever()
