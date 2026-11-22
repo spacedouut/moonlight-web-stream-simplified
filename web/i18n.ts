@@ -33,6 +33,9 @@ export function normalizeLanguage(language: unknown): Language {
     if (language === "ko" || language === "ko-KR" || language === "ko_KR") {
         return "ko-KR"
     }
+    if (language === "fr" || language === "fr-FR" || language === "fr_FR") {
+        return "fr-FR"
+    }
     return "en"
 }
 
