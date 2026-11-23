@@ -9,12 +9,12 @@ use actix_ws::{Message, MessageStream, Session};
 use bytes::Bytes;
 use moonlight_common::stream::{
     proto::{
-        audio::AudioStreamEvent,
+        audio::stream::AudioStreamEvent,
         control::{
-            ControlStreamEvent,
             packet::{ControlPacket, ControlPacketConfig, PacketDirection},
+            stream::ControlStreamEvent,
         },
-        video::VideoStreamEvent,
+        video::stream::VideoStreamEvent,
     },
     tokio::{MoonlightStream, MoonlightStreamEvent},
 };

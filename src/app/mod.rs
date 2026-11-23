@@ -13,7 +13,7 @@ use moonlight_common::{
     error::Error as MoonlightError,
     http::{
         ClientInfo,
-        client::{async_client::RequestClient as _, tokio_hyper::TokioHyperClient},
+        client::{async_client::RequestClient as _, tokio::TokioClient},
         pair::PairingCryptoBackend,
         server_info::{ServerInfoEndpoint, ServerInfoRequest},
     },
@@ -327,7 +327,7 @@ pub(crate) struct AppInner {
 /// How long a WebTransport ticket from `GET /api/host/stream/web_transport` stays valid.
 const WEB_TRANSPORT_TICKET_TTL: Duration = Duration::from_secs(60);
 
-pub type RequestClient = TokioHyperClient;
+pub type RequestClient = TokioClient;
 
 #[derive(Clone)]
 pub struct App {

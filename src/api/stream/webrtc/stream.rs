@@ -6,9 +6,9 @@ use moonlight_common::stream::{
         MouseButtonAction,
     },
     proto::{
-        audio::AudioStreamEvent,
-        control::{ControlStreamEvent, packet::ControlPacket},
-        video::VideoStreamEvent,
+        audio::stream::AudioStreamEvent,
+        control::{packet::ControlPacket, stream::ControlStreamEvent},
+        video::stream::VideoStreamEvent,
     },
     tokio::{MoonlightStream, MoonlightStreamEvent},
 };
