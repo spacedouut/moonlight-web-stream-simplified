@@ -103,8 +103,7 @@ jobs:
         cross build --locked --release --target ${{ matrix.target }}
   
         npm ci
-        # moonlight-common's own lints must not fail the wasm build
-        RUSTFLAGS="" npm run build
+        npm run build
         mv dist static
   
         rm -rf web-server
