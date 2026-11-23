@@ -18,7 +18,7 @@ use moonlight_common::{
 use crate::{
     api::bindings::{self, DetailedHost, HostState, PairStatus, UndetailedHost},
     app::storage::{StorageHost, StorageHostModify, StorageHostPairInfo},
-    app::{AppError, AppInner, AppRef, RequestClient, auth::AuthUser, is_host_unreachable},
+    app::{AppError, AppInner, AppRef, RequestClient, auth::AuthUser},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -118,7 +118,7 @@ impl Host {
     fn is_offline<T>(&self, result: Result<T, MoonlightError>) -> Result<Option<T>, AppError> {
         match result {
             Ok(value) => Ok(Some(value)),
-            Err(err) if is_host_unreachable(&err) => Ok(None),
+            Err(MoonlightError::ConnectionFailed | MoonlightError::ConnectionTimeout) => Ok(None),
             Err(err) => Err(err.into()),
         }
     }

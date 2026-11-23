@@ -98,7 +98,7 @@ fn describe_client_error(err: &MoonlightError) -> ErrorDescription {
     };
 
     match err {
-        err if is_host_unreachable(err) => host_unreachable(),
+        MoonlightError::ConnectionFailed | MoonlightError::ConnectionTimeout => host_unreachable(),
         MoonlightError::NotPaired | MoonlightError::Unauthenticated => not_paired(),
         MoonlightError::ConnectionAlreadyExists => ErrorDescription {
             status: StatusCode::CONFLICT,
@@ -149,7 +149,7 @@ fn describe_client_error(err: &MoonlightError) -> ErrorDescription {
             code: "internal",
             message: "Something went wrong on the server. Restart it and try again.".into(),
         },
-        MoonlightError::Other(_) => ErrorDescription {
+        MoonlightError::Io(_) | MoonlightError::Other(_) => ErrorDescription {
             status: StatusCode::BAD_GATEWAY,
             code: "host_request_failed",
             message: format!("Couldn't talk to the host: {err}"),
@@ -181,17 +181,6 @@ fn sunshine_error_hint(message: Option<&str>) -> String {
 fn is_certificate_rejection(reason: &str) -> bool {
     let lower = reason.to_lowercase();
     lower.contains("authorized") || lower.contains("certificate")
-}
-
-/// Whether a host http request failed because the host couldn't be reached.
-/// The request client reports connect and socket failures as plain io errors.
-pub(crate) fn is_host_unreachable(err: &MoonlightError) -> bool {
-    matches!(
-        err,
-        MoonlightError::ConnectionFailed
-            | MoonlightError::ConnectionTimeout
-            | MoonlightError::Io(_)
-    )
 }
 
 fn describe_stream_error(err: &MoonlightError) -> ErrorDescription {
@@ -433,7 +422,7 @@ impl App {
             .await
         {
             Ok(info) => info,
-            Err(err) if is_host_unreachable(&err) => {
+            Err(MoonlightError::ConnectionFailed | MoonlightError::ConnectionTimeout) => {
                 return Err(AppError::HostNotFound);
             }
             Err(err) => return Err(err.into()),
@@ -569,10 +558,6 @@ mod tests {
         let cases = [
             (MoonlightError::ConnectionFailed, "host_unreachable"),
             (MoonlightError::ConnectionTimeout, "host_unreachable"),
-            (
-                MoonlightError::Io(io::ErrorKind::ConnectionRefused.into()),
-                "host_unreachable",
-            ),
             (MoonlightError::NotPaired, "not_paired"),
             (MoonlightError::Unauthenticated, "not_paired"),
             (MoonlightError::PairingFailedWrongPin, "pairing_failed"),
