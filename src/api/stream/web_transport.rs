@@ -26,12 +26,12 @@ use actix_web::{
 use bytes::Bytes;
 use moonlight_common::stream::{
     proto::{
-        audio::stream::AudioStreamEvent,
+        audio::AudioStreamEvent,
         control::{
+            ControlStreamEvent,
             packet::{ControlPacket, PacketDirection},
-            stream::ControlStreamEvent,
         },
-        video::stream::VideoStreamEvent,
+        video::VideoStreamEvent,
     },
     tokio::MoonlightStreamEvent,
 };
