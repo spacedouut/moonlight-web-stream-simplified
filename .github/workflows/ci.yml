@@ -36,7 +36,7 @@ jobs:
 
       # Clippy
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       # Binstall
       - name: Install cargo-binstall
@@ -100,7 +100,7 @@ jobs:
     # Build
     - name: Build
       run: |
-        cross build --release --target ${{ matrix.target }}
+        cross build --locked --release --target ${{ matrix.target }}
   
         npm ci
         npm run build
@@ -227,6 +227,7 @@ jobs:
         with:
           context: ./docker/
           file: ./docker/Dockerfile.action
+          platforms: linux/${{ matrix.platform }}
           tags: ${{ env.IMAGE }}:${{ github.ref_name }}-${{ matrix.platform }}
           push: true
 
