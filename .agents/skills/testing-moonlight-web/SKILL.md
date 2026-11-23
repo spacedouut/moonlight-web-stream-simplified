@@ -21,7 +21,7 @@ Stop the relay, write a V1-schema file (simplest input format; the relay migrate
    "cache": {"name": "DeadHost", "mac": null}, "paired": null}
 ]}
 ```
-- `paired: null` → unpaired host; a `paired` object with real PEMs → paired host. Generate PEMs with `openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=x -keyout k.pem -out c.pem -days 3 -addext "basicConstraints=critical,CA:TRUE"`. PEM tags are not checked.
+- `paired: null` → unpaired host; a `paired` object with real PEMs → paired host. Generate PEMs with `openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=x -keyout k.pem -out c.pem -days 3 -addext "basicConstraints=critical,CA:FALSE"` (must be a leaf: the relay now validates the host certificate and rejects a CA certificate presented as the server certificate with `CaUsedAsEndEntity`, which shows the host as offline). PEM tags are not checked.
 - A host entry with `paired` set makes the relay immediately do an HTTP serverinfo + HTTPS serverinfo + HTTPS applist exchange on every use; a dead address → `host_unreachable` everywhere — useful for failure-path testing.
 - Undetailed host entries can't be added through the UI when the address is unreachable (`POST /api/host` verifies reachability), so injecting dead hosts via data.json is the only way to get them into the list.
 
